@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ABC Planner</string>
+    <string name="title_activity_main">ABC Planner</string>
+    <string name="package_name">com.conta999.abcplanner</string>
+    <string name="custom_url_scheme">com.conta999.abcplanner</string>
+</resources>

@@ -1,0 +1,36 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+vite_log.txt
+.env
+.env.local
+.env.*.local
+
+# Android / Gradle
+android/local.properties
+android/.gradle/
+android/app/build/
+android/build/
+android/captures/
+android/*.iml
+android/.idea/
+android/app/google-services.json
+android/keystore.properties
+android/app/release/
+android/app/debug/
+
+# Secrets and signing
+*.jks
+*.p12
+*.keystore
+keystore.properties
+storepass.txt
+
+# IDE
+.idea/
+.vscode/
+android/**/build/
+android/.gradle/
+*.iml
+.gradle/

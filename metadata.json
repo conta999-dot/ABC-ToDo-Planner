@@ -1,0 +1,6 @@
+{
+  "name": "ABC Planner",
+  "description": "重要度と緊急度の4つの領域をベースにした、達成状況管理機能付きのタスクプランナーです。",
+  "requestFramePermissions": ["notifications"],
+  "majorCapabilities": []
+}
