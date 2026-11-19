@@ -98,16 +98,19 @@ public class NativeGoogleAuthPlugin extends Plugin {
                             ret.put("displayName", google.getDisplayName());
                             call.resolve(ret);
                         } catch (Exception e) {
-                            call.reject("Invalid Google ID token response: " + e.getMessage(), CODE_FAILED, e);
+                            call.reject("Invalid Google ID token response: " + e.getMessage(), CODE_FAILED, e, details(e, null));
                         }
                     } else {
-                        call.reject("Unexpected credential type: " + credential.getType(), CODE_FAILED);
+                        JSObject d = new JSObject();
+                        d.put("type", credential.getType());
+                        d.put("className", credential.getClass().getName());
+                        call.reject("Unexpected credential type: " + credential.getType(), CODE_FAILED, null, d);
                     }
                 }
 
                 @Override
                 public void onError(@NonNull GetCredentialException e) {
-                    call.reject(describe(e), classify(e), e);
+                    call.reject(describe(e), classify(e), e, details(e, e.getType()));
                 }
             }
         );
@@ -190,7 +193,7 @@ public class NativeGoogleAuthPlugin extends Plugin {
                     resolveToken(call, result);
                 }
             })
-            .addOnFailureListener(e -> call.reject(describe(e), classifyApi(e), e));
+            .addOnFailureListener(e -> call.reject(describe(e), classifyApi(e), e, details(e, null)));
     }
 
     private void handleAuthorizeResult(ActivityResult activityResult) {
@@ -211,7 +214,7 @@ public class NativeGoogleAuthPlugin extends Plugin {
                 .getAuthorizationResultFromIntent(data);
             resolveToken(call, result);
         } catch (ApiException e) {
-            call.reject(describe(e), classifyApi(e), e);
+            call.reject(describe(e), classifyApi(e), e, details(e, null));
         }
     }
 
@@ -224,6 +227,20 @@ public class NativeGoogleAuthPlugin extends Plugin {
         JSObject ret = new JSObject();
         ret.put("accessToken", token);
         call.resolve(ret);
+    }
+
+    /** Raw diagnostic details passed to JS (shown to the user so they can screenshot it). */
+    private static JSObject details(Exception e, String type) {
+        JSObject d = new JSObject();
+        d.put("className", e.getClass().getName());
+        if (type != null) d.put("type", type);
+        d.put("message", e.getMessage() != null ? e.getMessage() : "");
+        if (e instanceof ApiException) d.put("statusCode", ((ApiException) e).getStatusCode());
+        Throwable cause = e.getCause();
+        if (cause != null) {
+            d.put("cause", cause.getClass().getSimpleName() + (cause.getMessage() != null ? ": " + cause.getMessage() : ""));
+        }
+        return d;
     }
 
     private static String describe(Exception e) {

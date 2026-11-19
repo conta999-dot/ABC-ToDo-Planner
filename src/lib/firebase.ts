@@ -12,7 +12,7 @@ import { initializeFirestore, persistentLocalCache } from 'firebase/firestore';
 import { Capacitor } from '@capacitor/core';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { GOOGLE_WEB_CLIENT_ID } from './authConfig';
-import { NativeGoogleAuth, nativeAuthErrorMessage } from './nativeGoogleAuth';
+import { NativeGoogleAuth, nativeAuthErrorMessage, errorDetail } from './nativeGoogleAuth';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
@@ -48,9 +48,18 @@ export const initAuth = (
   });
 };
 
-const toFriendlyError = (error: unknown, kind: 'signIn' | 'authorize') => {
-  const e = new Error(nativeAuthErrorMessage(error, kind)) as Error & { code?: string };
+export type FriendlyError = Error & { code?: string; detail?: string; stage?: string };
+
+const toFriendlyError = (
+  error: unknown,
+  kind: 'signIn' | 'authorize',
+  stage: string,
+  friendlyOverride?: string,
+): FriendlyError => {
+  const e = new Error(friendlyOverride ?? nativeAuthErrorMessage(error, kind)) as FriendlyError;
   e.code = (error as { code?: string } | null)?.code;
+  e.stage = stage;
+  e.detail = `[${stage}] ${errorDetail(error)}`;
   return e;
 };
 
@@ -67,30 +76,32 @@ const nativeAuthorizeDrive = async (interactive: boolean): Promise<string | null
       console.warn('Driveトークンのサイレント取得に失敗:', error);
       return null;
     }
-    throw toFriendlyError(error, 'authorize');
+    throw toFriendlyError(error, 'authorize', 'Drive許可');
   }
 };
 
 /** Android: Credential Manager によるネイティブ Google ログイン */
 const signInWithNativeGoogle = async (): Promise<{ user: User; accessToken: string | null }> => {
-  if (!GOOGLE_WEB_CLIENT_ID || GOOGLE_WEB_CLIENT_ID === 'REPLACE_ME') {
-    throw toFriendlyError({ code: 'MISCONFIGURED' }, 'signIn');
+  if (!GOOGLE_WEB_CLIENT_ID || (GOOGLE_WEB_CLIENT_ID as string) === 'REPLACE_ME') {
+    throw toFriendlyError({ code: 'MISCONFIGURED', message: 'GOOGLE_WEB_CLIENT_ID is not set' }, 'signIn', 'アプリ設定');
   }
   let idToken: string;
   try {
     ({ idToken } = await NativeGoogleAuth.signIn({ serverClientId: GOOGLE_WEB_CLIENT_ID }));
   } catch (error) {
-    throw toFriendlyError(error, 'signIn');
+    throw toFriendlyError(error, 'signIn', 'Googleアカウント選択（Credential Manager）');
   }
   let userCred;
   try {
     userCred = await signInWithCredential(auth, GoogleAuthProvider.credential(idToken));
   } catch (error) {
     const code = (error as { code?: string } | null)?.code ?? '';
-    if (code === 'auth/invalid-credential' || code === 'auth/operation-not-allowed' || code === 'auth/invalid-api-key') {
-      throw toFriendlyError({ code: 'MISCONFIGURED' }, 'signIn');
+    let friendly = 'Googleアカウントは選べましたが、Firebaseへのログインに失敗しました。';
+    if (code === 'auth/network-request-failed') friendly = 'ネットワークに接続できず、Firebaseへのログインに失敗しました。通信状態を確認してください。';
+    else if (code === 'auth/invalid-credential' || code === 'auth/operation-not-allowed' || code === 'auth/invalid-api-key') {
+      friendly = 'Googleアカウントは選べましたが、FirebaseがログインのIDトークンを受け付けませんでした（Firebase側のGoogleログイン設定を確認）。';
     }
-    throw toFriendlyError(error, 'signIn');
+    throw toFriendlyError(error, 'signIn', 'Firebaseログイン（signInWithCredential）', friendly);
   }
   // Drive 権限は付与済みなら静かに取得（未許可なら手動同期時に許可画面を出す）
   const accessToken = await nativeAuthorizeDrive(false);
@@ -105,7 +116,23 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
       return await signInWithNativeGoogle();
     }
 
-    const result = await signInWithPopup(auth, provider);
+    let result;
+    try {
+      result = await signInWithPopup(auth, provider);
+    } catch (error) {
+      const code = (error as { code?: string } | null)?.code ?? '';
+      const friendly =
+        code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request'
+          ? 'ログインがキャンセルされました。'
+          : code === 'auth/popup-blocked'
+            ? 'ログイン用のポップアップがブロックされました。ブラウザのポップアップ許可を確認してください。'
+            : code === 'auth/unauthorized-domain'
+              ? 'このページのドメインがFirebaseの「承認済みドメイン」に登録されていません。'
+              : code === 'auth/network-request-failed'
+                ? 'ネットワークに接続できず、ログインに失敗しました。'
+                : 'Googleログインに失敗しました。';
+      throw toFriendlyError(error, 'signIn', 'Webログイン（ポップアップ）', friendly);
+    }
     const credential = GoogleAuthProvider.credentialFromResult(result);
     cachedAccessToken = credential?.accessToken ?? null;
     return { user: result.user, accessToken: cachedAccessToken };

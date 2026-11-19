@@ -191,7 +191,7 @@ export default function TaskList({
       <div className="overflow-x-auto" id="tasks-table-wrapper">
         <table className="w-full text-left border-collapse">
           <thead>
-            <tr className="bg-zinc-50/50 dark:bg-zinc-800/20 border-b border-zinc-100 dark:border-zinc-800 text-[10px] font-bold text-zinc-400 dark:text-zinc-500 tracking-wider">
+            <tr className="bg-zinc-50/50 dark:bg-zinc-800/20 border-b border-zinc-100 dark:border-zinc-800 text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 tracking-wider">
               {/* Core User Request: Change "完" column header to "達成状況" */}
               <th className="w-24 py-2 px-3 text-center">達成状況</th>
               <th className="w-16 py-2 px-1 text-center">優先度</th>
@@ -237,7 +237,7 @@ export default function TaskList({
                     {/* Priority Badge */}
                     <td className="py-2 px-1 text-center font-bold text-xs" onClick={() => onSelectTask(task)}>
                       {task.priorityLetter ? (
-                        <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-black tracking-wide ${
+                        <span className={`inline-block px-1.5 py-0.5 rounded text-[0.8125rem] font-black tracking-wide ${
                           task.priorityLetter === 'A'
                             ? 'bg-red-500 text-white'
                             : task.priorityLetter === 'B'
@@ -261,14 +261,14 @@ export default function TaskList({
                         </span>
                         
                         {task.notes && (
-                          <span className="text-[10px] text-zinc-400 dark:text-zinc-500 truncate max-w-sm font-medium">
+                          <span className="text-[0.8125rem] text-zinc-400 dark:text-zinc-500 truncate max-w-sm font-medium">
                             {task.notes}
                           </span>
                         )}
 
                         {/* Reminder Badge if any */}
                         {task.reminderEnabled && task.reminderTime && (
-                          <div className="flex items-center gap-1 text-[9px] font-semibold text-sky-500 mt-0.5">
+                          <div className="flex items-center gap-1 text-[0.75rem] font-semibold text-sky-500 mt-0.5">
                             <Bell className="w-2.5 h-2.5" />
                             <span>通知 {task.reminderTime}</span>
                             {task.reminderNotified && (
@@ -280,7 +280,7 @@ export default function TaskList({
                     </td>
 
                     {/* Due Date */}
-                    <td className="py-2 px-2 text-center text-[10px] font-bold text-zinc-400 dark:text-zinc-500" onClick={() => onSelectTask(task)}>
+                    <td className="py-2 px-2 text-center text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500" onClick={() => onSelectTask(task)}>
                       <div className="flex items-center justify-center gap-1">
                         <Calendar className="w-3 h-3" />
                         <span>{task.dueDate === selectedDate ? '今日' : task.dueDate}</span>
@@ -318,7 +318,7 @@ export default function TaskList({
       </div>
 
       {/* Helper Guide about symbols */}
-      <div className="mt-4 pt-3 border-t border-zinc-100 dark:border-zinc-800 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-zinc-400 dark:text-zinc-500 font-semibold" id="status-guide-legend">
+      <div className="mt-4 pt-3 border-t border-zinc-100 dark:border-zinc-800 flex flex-wrap gap-x-4 gap-y-1 text-[0.8125rem] text-zinc-400 dark:text-zinc-500 font-semibold" id="status-guide-legend">
         <span>【達成状況 記号凡例】</span>
         <span>未達成: (空欄)</span>
         <span className="text-emerald-500">完了: ✓</span>

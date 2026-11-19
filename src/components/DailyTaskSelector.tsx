@@ -128,7 +128,7 @@ export default function DailyTaskSelector({ selectedDate, onDateChange, tasks }:
                   className="text-zinc-900 dark:text-zinc-100 transition-all duration-300"
                 />
               </svg>
-              <span className="absolute text-[10px] font-bold text-zinc-700 dark:text-zinc-300">
+              <span className="absolute text-[0.8125rem] font-bold text-zinc-700 dark:text-zinc-300">
                 {completionPercentage}%
               </span>
             </div>

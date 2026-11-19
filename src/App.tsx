@@ -24,6 +24,7 @@ import { getLocalTasks, saveLocalTasks } from './lib/db';
 import { startReminderScheduler, stopReminderScheduler, requestNotificationPermission, rescheduleNativeReminders } from './lib/reminder';
 import { getLocalDateString, addDays, newTaskId, parseLocalDate } from './lib/dates';
 import { initAuth, googleSignIn, logout as firebaseLogout } from './lib/firebase';
+import { errorDetail } from './lib/nativeGoogleAuth';
 import { subscribeToUserTasks, pushUserTasks } from './lib/sync';
 import { mergeTasks } from './lib/drive';
 
@@ -199,6 +200,7 @@ function SyncStatusChip({
   isSigningIn,
   onSignIn,
   onSignOut,
+  onShowError,
 }: {
   user: User | null;
   isOnline: boolean;
@@ -208,6 +210,7 @@ function SyncStatusChip({
   isSigningIn: boolean;
   onSignIn: () => void;
   onSignOut: () => void;
+  onShowError: () => void;
 }) {
   const accountLabel = user?.email || user?.displayName || 'ログイン済み';
   const statusLine = !isOnline
@@ -215,7 +218,7 @@ function SyncStatusChip({
     : isSyncing
       ? '同期中…'
       : syncError
-        ? '同期エラー'
+        ? (user ? '同期エラー' : 'ログイン失敗')
         : user
           ? (lastSyncTime ? `最終同期 ${lastSyncTime}` : 'クラウド同期')
           : 'この端末のみ';
@@ -223,20 +226,32 @@ function SyncStatusChip({
   return (
     <div className="flex items-center gap-2 shrink-0" id="sync-status-chip">
       <div className="text-right leading-tight">
-        <div className="text-[11px] font-bold text-zinc-700 dark:text-zinc-200 truncate max-w-[46vw] sm:max-w-xs">
+        <div className="text-[0.8125rem] font-bold text-zinc-700 dark:text-zinc-200 truncate max-w-[46vw] sm:max-w-xs">
           {user ? accountLabel : '未ログイン'}
         </div>
-        <div className={`text-[10px] font-semibold truncate max-w-[46vw] sm:max-w-xs ${
-          !isOnline || syncError ? 'text-amber-600 dark:text-amber-400' : 'text-zinc-400 dark:text-zinc-500'
-        }`} title={syncError || statusLine}>
-          {statusLine}
-        </div>
+        {syncError && !isSyncing && isOnline ? (
+          <button
+            type="button"
+            onClick={onShowError}
+            className="block ml-auto text-[0.8125rem] font-bold underline decoration-dotted underline-offset-2 truncate max-w-[46vw] sm:max-w-xs text-amber-600 dark:text-amber-400"
+            title={syncError}
+            id="btn-sync-error-detail"
+          >
+            ⚠ {statusLine}
+          </button>
+        ) : (
+          <div className={`text-[0.8125rem] font-semibold truncate max-w-[46vw] sm:max-w-xs ${
+            !isOnline ? 'text-amber-600 dark:text-amber-400' : 'text-zinc-400 dark:text-zinc-500'
+          }`} title={statusLine}>
+            {statusLine}
+          </div>
+        )}
       </div>
       {user ? (
         <button
           type="button"
           onClick={onSignOut}
-          className="px-2 py-1 text-[10px] font-bold rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+          className="px-2.5 py-1.5 text-[0.8125rem] font-bold rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
         >
           ログアウト
         </button>
@@ -245,7 +260,7 @@ function SyncStatusChip({
           type="button"
           onClick={onSignIn}
           disabled={isSigningIn}
-          className="px-2 py-1 text-[10px] font-bold rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 hover:opacity-90 disabled:opacity-60"
+          className="px-2.5 py-1.5 text-[0.8125rem] font-bold rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 hover:opacity-90 disabled:opacity-60"
         >
           {isSigningIn ? '接続中…' : 'ログイン'}
         </button>
@@ -280,7 +295,19 @@ export default function App() {
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator === 'undefined' ? true : navigator.onLine);
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
-  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncError, setSyncErrorText] = useState<string | null>(null);
+  const [syncErrorDetail, setSyncErrorDetail] = useState<string>('');
+  const [errorDialog, setErrorDialog] = useState<{ title: string; message: string; detail: string } | null>(null);
+  /** 同期エラーを設定（第2引数に元のエラーを渡すと、詳細表示用の生情報も保存） */
+  const setSyncError = (message: string | null, rawError?: unknown) => {
+    setSyncErrorText(message);
+    if (message === null) {
+      setSyncErrorDetail('');
+    } else if (rawError !== undefined) {
+      const detail = (rawError as { detail?: string } | null)?.detail || errorDetail(rawError);
+      setSyncErrorDetail(detail);
+    }
+  };
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const authUserRef = useRef<User | null>(null);
@@ -465,7 +492,7 @@ export default function App() {
               void pushUserTasks(authUser.uid, merged.map((task) => ({ ...task, userId: authUser.uid })))
                 .catch((error: unknown) => {
                   const message = error instanceof Error ? error.message : '初回同期に失敗しました。';
-                  setSyncError(message);
+                  setSyncError(`初回同期に失敗しました: ${message}`, error);
                 })
                 .finally(() => setIsSyncing(false));
               applyRemote(merged);
@@ -477,7 +504,7 @@ export default function App() {
         applyRemote(cloudTasks);
       },
       (error) => {
-        setSyncError(error.message || 'クラウドとの同期に失敗しました。');
+        setSyncError('クラウド（Firestore）との同期に失敗しました。', error);
         applyingRemoteRef.current = false;
       }
     );
@@ -528,8 +555,7 @@ export default function App() {
         })
         .catch((error: unknown) => {
           console.error('Firestoreへの保存に失敗しました:', error);
-          const message = error instanceof Error ? error.message : 'クラウドへの保存に失敗しました。';
-          setSyncError(message);
+          setSyncError('クラウド（Firestore）への保存に失敗しました。', error);
         })
         .finally(() => setIsSyncing(false));
     }
@@ -575,7 +601,9 @@ export default function App() {
       await googleSignIn();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Googleログインに失敗しました。';
-      setSyncError(message);
+      const detail = (error as { detail?: string } | null)?.detail || errorDetail(error);
+      setSyncError(message, error);
+      setErrorDialog({ title: 'ログインエラー', message, detail });
     } finally {
       setIsSigningIn(false);
     }
@@ -590,7 +618,7 @@ export default function App() {
       setSyncError(null);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'ログアウトに失敗しました。';
-      setSyncError(message);
+      setSyncError(message, error);
     }
   };
 
@@ -985,14 +1013,14 @@ export default function App() {
       <header className="border-b border-zinc-200/60 dark:border-zinc-800 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md sticky top-0 z-30 flex-none" id="global-header">
         <div className="max-w-6xl mx-auto px-4 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           
-          <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-start">
-            <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-start">
+            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
               <div className="p-2 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 rounded-xl font-bold shadow-sm text-lg">
                 📅
               </div>
               <div>
-                <h1 className="text-lg font-black tracking-tight flex items-center gap-1.5">
-                  <span>ABC Planner</span>
+                <h1 className="text-lg font-black tracking-tight flex items-center gap-1.5 whitespace-nowrap min-w-0">
+                  <span className="truncate">ABC Planner</span>
                   <button
                     onClick={() => {
                       if (currentView === 'settings') {
@@ -1013,7 +1041,7 @@ export default function App() {
                     <Settings className="w-5 h-5" />
                   </button>
                 </h1>
-                <p className="text-[11px] font-medium text-zinc-400 dark:text-zinc-500">
+                <p className="hidden sm:block text-[0.875rem] font-medium text-zinc-400 dark:text-zinc-500">
                   重要度と緊急度の4つの領域で、時間と達成状況をプランニング
                 </p>
               </div>
@@ -1027,11 +1055,58 @@ export default function App() {
               isSigningIn={isSigningIn}
               onSignIn={handleHeaderSignIn}
               onSignOut={handleHeaderSignOut}
+              onShowError={() => setErrorDialog({
+                title: '同期エラーの詳細',
+                message: syncError || '',
+                detail: syncErrorDetail,
+              })}
             />
           </div>
 
         </div>
       </header>
+
+      {errorDialog && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+          onClick={() => setErrorDialog(null)}
+          role="dialog"
+          aria-modal="true"
+          id="error-detail-dialog"
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-white dark:bg-zinc-900 p-5 shadow-xl border border-zinc-200 dark:border-zinc-700"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-lg font-bold text-amber-600 dark:text-amber-400 mb-2">⚠ {errorDialog.title}</h2>
+            <p className="text-base text-zinc-800 dark:text-zinc-100 whitespace-pre-wrap break-words">{errorDialog.message}</p>
+            {errorDialog.detail && (
+              <div className="mt-3">
+                <div className="text-sm font-bold text-zinc-500 dark:text-zinc-400">詳細（この画面のスクショを送ってください）</div>
+                <pre className="mt-1 max-h-60 overflow-auto rounded-lg bg-zinc-100 dark:bg-zinc-800 p-2 text-sm text-zinc-700 dark:text-zinc-200 whitespace-pre-wrap break-all select-text">{errorDialog.detail}</pre>
+              </div>
+            )}
+            <div className="mt-4 flex justify-end gap-2">
+              {errorDialog.detail && typeof navigator !== 'undefined' && navigator.clipboard && (
+                <button
+                  type="button"
+                  className="px-4 py-2 text-base font-bold rounded-lg border border-zinc-300 dark:border-zinc-600 text-zinc-700 dark:text-zinc-200"
+                  onClick={() => { void navigator.clipboard.writeText(`${errorDialog.message}\n${errorDialog.detail}`).catch(() => undefined); }}
+                >
+                  コピー
+                </button>
+              )}
+              <button
+                type="button"
+                className="px-4 py-2 text-base font-bold rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950"
+                onClick={() => setErrorDialog(null)}
+              >
+                閉じる
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
 
 
@@ -1039,7 +1114,7 @@ export default function App() {
       <main 
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
-        className="max-w-6xl mx-auto px-4 py-6 flex-1 overflow-y-auto max-h-[calc(100vh-215px)] sm:max-h-none sm:overflow-visible pb-28 sm:pb-6" 
+        className="w-full min-w-0 max-w-6xl mx-auto px-4 py-6 flex-1 overflow-y-auto max-h-[calc(100vh-215px)] sm:max-h-none sm:overflow-visible pb-28 sm:pb-6" 
         id="view-panel-viewport"
       >
         
@@ -1055,22 +1130,23 @@ export default function App() {
                 
                 <div className="flex items-center gap-1.5 min-w-0">
                   <h3 className="text-xs font-black tracking-wider uppercase text-zinc-400 dark:text-zinc-500 truncate">
-                    タスクプラン一覧
+                    <span className="sm:hidden">タスク</span>
+                    <span className="hidden sm:inline">タスクプラン一覧</span>
                   </h3>
-                  <span className="text-[10px] font-bold px-1.5 py-0.5 bg-zinc-100 dark:bg-zinc-850 rounded-full text-zinc-500">
+                  <span className="text-[0.8125rem] font-bold px-1.5 py-0.5 bg-zinc-100 dark:bg-zinc-850 rounded-full text-zinc-500">
                     {sortedTasks.length}
                   </span>
                   {selectedQuadrant && (
                     <button
                       onClick={() => setSelectedQuadrant(null)}
-                      className="text-[10px] font-bold text-amber-600 dark:text-amber-400 underline hover:no-underline ml-1 shrink-0"
+                      className="text-[0.8125rem] font-bold text-amber-600 dark:text-amber-400 underline hover:no-underline ml-1 shrink-0"
                     >
                       解除
                     </button>
                   )}
                 </div>
 
-                <div className="flex items-center gap-1.5 shrink-0">
+                <div className="flex items-center gap-1.5 min-w-0">
                   
                   {/* Text search */}
                   <input
@@ -1078,14 +1154,14 @@ export default function App() {
                     placeholder="キーワード検索..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="hidden md:inline-block px-2.5 py-1 text-[11px] font-medium bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg focus:outline-none w-28 sm:w-36 text-zinc-800 dark:text-zinc-200"
+                    className="hidden md:inline-block px-2.5 py-1 text-[0.875rem] font-medium bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg focus:outline-none w-28 sm:w-36 text-zinc-800 dark:text-zinc-200"
                   />
 
                   {/* Status Dropdown Filter */}
                   <select
                     value={statusFilter}
                     onChange={(e) => setStatusFilter(e.target.value)}
-                    className="px-2 py-1 text-[11px] font-semibold bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg focus:outline-none text-zinc-700 dark:text-zinc-300 h-7"
+                    className="min-w-0 max-w-[10.5rem] sm:max-w-none px-2 py-1 text-[0.875rem] font-semibold bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg focus:outline-none text-zinc-700 dark:text-zinc-300 h-8 truncate"
                   >
                     <option value="all_active">すべてのタスク (削除除く)</option>
                     <option value="pending_or_progress">未達成・進行中</option>
@@ -1101,7 +1177,7 @@ export default function App() {
                   {/* Create New Task Detail */}
                   <button
                     onClick={handleCreateNewTaskDetail}
-                    className="flex px-2.5 py-1 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 rounded-lg text-[11px] font-bold hover:scale-102 transition-all items-center gap-1 shadow-xs h-7"
+                    className="flex shrink-0 px-2.5 py-1 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 rounded-lg text-[0.875rem] font-bold hover:scale-102 transition-all items-center gap-1 shadow-xs h-8"
                   >
                     <Plus className="w-3 h-3" />
                     <span className="hidden xs:inline">詳細作成</span>
@@ -1115,14 +1191,14 @@ export default function App() {
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
-                    <tr className="bg-zinc-50/50 dark:bg-zinc-800/10 border-b border-zinc-200/50 dark:border-zinc-850 text-[10px] font-bold text-zinc-400 dark:text-zinc-500 tracking-wider">
+                    <tr className="bg-zinc-50/50 dark:bg-zinc-800/10 border-b border-zinc-200/50 dark:border-zinc-850 text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 tracking-wider">
                       <th className="w-12 sm:w-24 py-2 px-1 sm:px-3 text-center">
                         <span className="hidden sm:inline">達成状況</span>
-                        <span className="sm:hidden block leading-tight text-[9px]">達成<br/>状況</span>
+                        <span className="sm:hidden block leading-tight text-[0.75rem]">達成<br/>状況</span>
                       </th>
                       <th className="w-10 sm:w-16 py-2 px-1 sm:px-2 text-center">
                         <span className="hidden sm:inline">優先度</span>
-                        <span className="sm:hidden block leading-tight text-[9px]">優先<br/>度</span>
+                        <span className="sm:hidden block leading-tight text-[0.75rem]">優先<br/>度</span>
                       </th>
                       <th className="py-2 px-2 sm:px-3">タスク内容</th>
                       <th className="w-16 sm:w-28 py-2 px-1 sm:px-3 text-center">期日</th>
@@ -1256,7 +1332,7 @@ export default function App() {
                               ) : (
                                 <span className="cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 p-1 rounded-lg transition-all" title="優先度を変更">
                                   {task.priorityLetter ? (
-                                    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-black tracking-wide ${
+                                    <span className={`inline-block px-1.5 py-0.5 rounded text-[0.8125rem] font-black tracking-wide ${
                                       task.priorityLetter === 'A'
                                         ? 'bg-red-500 text-white'
                                         : task.priorityLetter === 'B'
@@ -1317,12 +1393,12 @@ export default function App() {
                                     {task.title}
                                   </span>
                                   {task.notes && (
-                                    <span className="text-[10px] text-zinc-400 dark:text-zinc-500 line-clamp-1 max-w-lg">
+                                    <span className="text-[0.8125rem] text-zinc-400 dark:text-zinc-500 line-clamp-1 max-w-lg">
                                       {task.notes}
                                     </span>
                                   )}
                                   {task.reminderEnabled && task.reminderTime && (
-                                    <div className="flex items-center gap-1 text-[9px] text-sky-500 font-bold mt-0.5">
+                                    <div className="flex items-center gap-1 text-[0.75rem] text-sky-500 font-bold mt-0.5">
                                       <Clock className="w-2.5 h-2.5" />
                                       <span>通知: {task.reminderTime}</span>
                                     </div>
@@ -1332,7 +1408,7 @@ export default function App() {
                             </td>
 
                             {/* Due Date Column */}
-                            <td className="py-2 px-1 sm:px-3 text-center text-[10px] font-bold text-zinc-400 dark:text-zinc-500">
+                            <td className="py-2 px-1 sm:px-3 text-center text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500">
                               <span className={task.dueDate === todayStr ? 'text-zinc-900 dark:text-zinc-100 underline decoration-zinc-900 dark:decoration-zinc-100 decoration-2' : ''}>
                                 {task.dueDate === todayStr ? (
                                   '今日'
@@ -1354,7 +1430,7 @@ export default function App() {
               </div>
 
               {/* Status symbols guide legend */}
-              <div className="mt-5 pt-3 border-t border-zinc-200/60 dark:border-zinc-800 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-zinc-400 dark:text-zinc-500 font-bold" id="status-legends">
+              <div className="mt-5 pt-3 border-t border-zinc-200/60 dark:border-zinc-800 flex flex-wrap gap-x-4 gap-y-1 text-[0.8125rem] text-zinc-400 dark:text-zinc-500 font-bold" id="status-legends">
                 <span>【達成状況 記号対応】</span>
                 <span>未達成 (空欄)</span>
                 <span className="text-emerald-500 dark:text-emerald-400">完了 (✓)</span>
@@ -1430,11 +1506,11 @@ export default function App() {
                   >
                     <div className="flex justify-between items-center gap-1">
                       <div className="flex flex-col min-w-0">
-                        <span className="text-[11px] sm:text-xs font-black tracking-wider truncate leading-tight">{quad.label}</span>
-                        <p className="hidden sm:block text-[10px] font-bold opacity-80 mt-0.5">{quad.desc}</p>
+                        <span className="text-[0.875rem] sm:text-xs font-black tracking-wide leading-tight break-words">{quad.label}</span>
+                        <p className="hidden sm:block text-[0.8125rem] font-bold opacity-80 mt-0.5">{quad.desc}</p>
                       </div>
                       <div className="flex items-center gap-1 sm:gap-1.5 flex-none">
-                        <span className="text-[9px] sm:text-[10px] font-black px-1.5 py-0.5 rounded-full bg-zinc-900/10 dark:bg-zinc-100/10 text-zinc-700 dark:text-zinc-300">
+                        <span className="text-[0.75rem] sm:text-[0.8125rem] font-black px-1.5 py-0.5 rounded-full bg-zinc-900/10 dark:bg-zinc-100/10 text-zinc-700 dark:text-zinc-300">
                           {quad.count}件
                         </span>
                         <button
@@ -1467,7 +1543,7 @@ export default function App() {
                 >
                   <div className="flex justify-between items-start mb-3">
                     <div>
-                      <span className="text-[10px] font-black tracking-wider uppercase text-zinc-400 dark:text-zinc-500">
+                      <span className="text-[0.8125rem] font-black tracking-wider uppercase text-zinc-400 dark:text-zinc-500">
                         領域の説明
                       </span>
                       <h3 className="text-sm font-black text-zinc-900 dark:text-zinc-100 mt-0.5">
@@ -1484,7 +1560,7 @@ export default function App() {
                   
                   <div className="space-y-3">
                     <div className="px-2.5 py-1.5 bg-zinc-50 dark:bg-zinc-950 rounded-lg border border-zinc-100 dark:border-zinc-850">
-                      <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 mr-1.5">性質:</span>
+                      <span className="text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mr-1.5">性質:</span>
                       <span className="text-xs font-black text-zinc-700 dark:text-zinc-300">{quadrantPopup.desc}</span>
                     </div>
                     <p className="text-xs font-medium text-zinc-600 dark:text-zinc-400 leading-relaxed">
@@ -1521,7 +1597,7 @@ export default function App() {
                   {selectedQuadrant && (
                     <button
                       onClick={() => setSelectedQuadrant(null)}
-                      className="text-[10px] font-bold text-amber-600 dark:text-amber-400 underline hover:no-underline ml-1"
+                      className="text-[0.8125rem] font-bold text-amber-600 dark:text-amber-400 underline hover:no-underline ml-1"
                     >
                       選択解除
                     </button>
@@ -1533,14 +1609,14 @@ export default function App() {
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
-                    <tr className="bg-zinc-50/50 dark:bg-zinc-800/10 border-b border-zinc-200/50 dark:border-zinc-850 text-[10px] font-bold text-zinc-400 dark:text-zinc-500 tracking-wider">
+                    <tr className="bg-zinc-50/50 dark:bg-zinc-800/10 border-b border-zinc-200/50 dark:border-zinc-850 text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 tracking-wider">
                       <th className="w-12 sm:w-24 py-2 px-1 sm:px-3 text-center">
                         <span className="hidden sm:inline">達成状況</span>
-                        <span className="sm:hidden block leading-tight text-[9px]">達成<br/>状況</span>
+                        <span className="sm:hidden block leading-tight text-[0.75rem]">達成<br/>状況</span>
                       </th>
                       <th className="w-10 sm:w-16 py-2 px-1 sm:px-2 text-center">
                         <span className="hidden sm:inline">優先度</span>
-                        <span className="sm:hidden block leading-tight text-[9px]">優先<br/>度</span>
+                        <span className="sm:hidden block leading-tight text-[0.75rem]">優先<br/>度</span>
                       </th>
                       <th className="py-2 px-2 sm:px-3">タスク内容</th>
                       <th className="w-16 sm:w-28 py-2 px-1 sm:px-3 text-center">期日</th>
@@ -1697,7 +1773,7 @@ export default function App() {
                                   ) : (
                                     <span className="cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 p-1 rounded-lg transition-all" title="優先度を変更">
                                       {task.priorityLetter ? (
-                                        <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-black tracking-wide ${
+                                        <span className={`inline-block px-1.5 py-0.5 rounded text-[0.8125rem] font-black tracking-wide ${
                                           task.priorityLetter === 'A'
                                             ? 'bg-red-500 text-white'
                                             : task.priorityLetter === 'B'
@@ -1758,12 +1834,12 @@ export default function App() {
                                         {task.title}
                                       </span>
                                       {task.notes && (
-                                        <span className="text-[10px] text-zinc-400 dark:text-zinc-500 line-clamp-1 max-w-lg">
+                                        <span className="text-[0.8125rem] text-zinc-400 dark:text-zinc-500 line-clamp-1 max-w-lg">
                                           {task.notes}
                                         </span>
                                       )}
                                       {task.reminderEnabled && task.reminderTime && (
-                                        <div className="flex items-center gap-1 text-[9px] text-sky-500 font-bold mt-0.5">
+                                        <div className="flex items-center gap-1 text-[0.75rem] text-sky-500 font-bold mt-0.5">
                                           <Clock className="w-2.5 h-2.5" />
                                           <span>通知: {task.reminderTime}</span>
                                         </div>
@@ -1772,7 +1848,7 @@ export default function App() {
                                   )}
                                 </td>
 
-                                <td className="py-2 px-1 sm:px-3 text-center text-[10px] font-bold text-zinc-400 dark:text-zinc-500">
+                                <td className="py-2 px-1 sm:px-3 text-center text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500">
                                   <span className={task.dueDate === todayStr ? 'text-zinc-900 dark:text-zinc-100 underline decoration-zinc-900 dark:decoration-zinc-100 decoration-2' : ''}>
                                     {task.dueDate === todayStr ? (
                                       '今日'
@@ -1822,8 +1898,9 @@ export default function App() {
                   <ChevronLeft className="w-4 h-4" />
                 </button>
                 
-                <span className="text-xs font-bold font-mono tracking-tight text-zinc-800 dark:text-zinc-200 px-3 py-1 bg-zinc-50 dark:bg-zinc-950 rounded-lg">
-                  {weekDays[0]} 〜 {weekDays[6]}
+                <span className="text-xs font-bold font-mono tracking-tight whitespace-nowrap text-zinc-800 dark:text-zinc-200 px-3 py-1 bg-zinc-50 dark:bg-zinc-950 rounded-lg">
+                  <span className="sm:hidden">{weekDays[0].slice(5).replace('-', '/')} 〜 {weekDays[6].slice(5).replace('-', '/')}</span>
+                  <span className="hidden sm:inline">{weekDays[0]} 〜 {weekDays[6]}</span>
                 </span>
 
                 <button
@@ -1836,7 +1913,7 @@ export default function App() {
 
                 <button
                   onClick={() => setSelectedDate(getLocalDateString())}
-                  className="px-2.5 py-1 text-[10px] font-bold rounded bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 ml-1 hover:scale-102 transition-all"
+                  className="px-2.5 py-1 text-[0.8125rem] font-bold whitespace-nowrap rounded bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 ml-1 hover:scale-102 transition-all"
                 >
                   今日
                 </button>
@@ -1871,11 +1948,11 @@ export default function App() {
                     {/* Day Header */}
                     <div className="border-b border-zinc-100 dark:border-zinc-800 pb-2 mb-2">
                       <div className="flex justify-between items-center">
-                        <span className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500">
+                        <span className="text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500">
                           {dateStr.split('-').slice(1).join('/')}
                         </span>
                         {isToday && (
-                          <span className="text-[9px] font-black bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 px-1.5 py-0.5 rounded-md tracking-wider">
+                          <span className="text-[0.75rem] font-black bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 px-1.5 py-0.5 rounded-md tracking-wider">
                             本日
                           </span>
                         )}
@@ -1898,7 +1975,7 @@ export default function App() {
                               style={{ width: `${progressPct}%` }}
                             />
                           </div>
-                          <span className="text-[9px] font-bold text-zinc-400 font-mono">
+                          <span className="text-[0.75rem] font-bold text-zinc-400 font-mono">
                             {progressPct}%
                           </span>
                         </div>
@@ -1908,7 +1985,7 @@ export default function App() {
                     {/* Day Tasks List Panel */}
                     <div className="flex-1 flex flex-col gap-1.5 overflow-y-auto max-h-[220px] scrollbar-none">
                       {dayTasks.length === 0 ? (
-                        <div className="text-[10px] text-zinc-400/80 dark:text-zinc-600 italic text-center py-8">
+                        <div className="text-[0.8125rem] text-zinc-400/80 dark:text-zinc-600 italic text-center py-8">
                           予定なし
                         </div>
                       ) : (
@@ -1938,7 +2015,7 @@ export default function App() {
                                       setInlineEditingField(null);
                                     }}
                                     autoFocus
-                                    className="px-1 py-0.5 text-[10px] bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded focus:outline-none font-bold text-zinc-800 dark:text-zinc-100 shadow-sm"
+                                    className="px-1 py-0.5 text-[0.8125rem] bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded focus:outline-none font-bold text-zinc-800 dark:text-zinc-100 shadow-sm"
                                   >
                                     <option value="pending">未達成</option>
                                     <option value="in_progress">進行中 (・)</option>
@@ -1954,7 +2031,7 @@ export default function App() {
                                       setInlineEditingTaskId(t.id);
                                       setInlineEditingField('status');
                                     }}
-                                    className={`w-5 h-5 rounded border text-[9px] font-black flex items-center justify-center transition-all hover:scale-105 active:scale-95 ${statusInfo.bg}`}
+                                    className={`w-5 h-5 rounded border text-[0.75rem] font-black flex items-center justify-center transition-all hover:scale-105 active:scale-95 ${statusInfo.bg}`}
                                     title={`ステータス変更: ${statusInfo.label}`}
                                   >
                                     {statusInfo.symbol || (
@@ -1966,9 +2043,9 @@ export default function App() {
 
                               {/* Title & priority identifier */}
                               <div className="flex-1 min-w-0">
-                                <div className="text-[11px] font-bold leading-snug break-words line-clamp-2">
+                                <div className="text-[0.875rem] font-bold leading-snug break-words line-clamp-2">
                                   {t.priorityLetter && (
-                                    <span className={`inline-block text-[9px] font-black mr-1 rounded-sm px-0.5 ${
+                                    <span className={`inline-block text-[0.75rem] font-black mr-1 rounded-sm px-0.5 ${
                                       t.priorityLetter === 'A'
                                         ? 'bg-red-500/10 text-red-500'
                                         : t.priorityLetter === 'B'
@@ -1999,7 +2076,7 @@ export default function App() {
                           setPrevView('daily');
                           setCurrentView('detail');
                         }}
-                        className="w-full py-1 bg-zinc-50 dark:bg-zinc-950 border border-zinc-200/60 dark:border-zinc-800/80 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg text-[10px] font-bold text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 transition-all flex items-center justify-center gap-1"
+                        className="w-full py-1 bg-zinc-50 dark:bg-zinc-950 border border-zinc-200/60 dark:border-zinc-800/80 hover:bg-zinc-100 dark:hover:bg-zinc-800 rounded-lg text-[0.8125rem] font-bold text-zinc-500 hover:text-zinc-800 dark:hover:text-zinc-200 transition-all flex items-center justify-center gap-1"
                       >
                         <Plus className="w-3 h-3" />
                         <span>予定を作成</span>
@@ -2043,7 +2120,7 @@ export default function App() {
                   <span className="text-xs font-bold text-zinc-700 dark:text-zinc-200">
                     表示テーマの切り替え
                   </span>
-                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
+                  <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
                     ライトモードとダークモードを切り替えます。選択したテーマはブラウザに自動保存されます。
                   </p>
                 </div>
@@ -2070,7 +2147,7 @@ export default function App() {
                       リマインダープッシュ通知
                     </span>
                   </div>
-                  <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
+                  <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
                     タスクに設定された通知時間になったら、ブラウザからデスクトップ・スマートフォンの通知画面へリマインダーを配信します。
                   </p>
                 </div>
@@ -2095,7 +2172,7 @@ export default function App() {
                 データのバックアップと移行
               </h3>
               <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl">
-                <p className="text-[11px] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold mb-4">
+                <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold mb-4">
                   ログイン中は Google アカウントごとにクラウドへ同期されます。未ログイン時はこの端末内に保存されます。
                   追加のバックアップとして、JSON / CSV の書き出し・読み込みと Google ドライブへの保存も利用できます。
                 </p>
@@ -2110,7 +2187,7 @@ export default function App() {
               <h3 className="text-xs font-bold text-zinc-400 dark:text-zinc-500 mb-2.5 uppercase tracking-wider">
                 システム情報
               </h3>
-              <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 leading-relaxed space-y-1">
+              <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl text-[0.875rem] font-semibold text-zinc-500 dark:text-zinc-400 leading-relaxed space-y-1">
                 <div>アプリ名: ABC Planner（Google Play 掲載名: ABC ToDo Planner）</div>
                 <div>データストレージ: この端末のキャッシュ ＋ Google アカウントでログインするとクラウド同期</div>
                 <div>バージョン: 0.3.0</div>
@@ -2202,7 +2279,7 @@ export default function App() {
                 
                 {/* 1. Importance (Priority Letter) Selector Dropdown */}
                 <div className="hidden sm:block w-full md:w-36">
-                  <label className="block text-[10px] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-letter">
+                  <label className="block text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-letter">
                     重要度
                   </label>
                   <select
@@ -2224,7 +2301,7 @@ export default function App() {
 
                 {/* 2. Urgency (Priority Number) Selector Dropdown */}
                 <div className="hidden sm:block w-full md:w-28">
-                  <label className="block text-[10px] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-number">
+                  <label className="block text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-number">
                     緊急度
                   </label>
                   <select
@@ -2242,7 +2319,7 @@ export default function App() {
 
                 {/* 3. Task Title Input */}
                 <div className="flex-1 w-full">
-                  <label className="block text-[10px] font-bold text-zinc-400 dark:text-zinc-500 mb-1 sm:block hidden" htmlFor="quick-title">
+                  <label className="block text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-1 sm:block hidden" htmlFor="quick-title">
                     タスク内容
                   </label>
                   <input
@@ -2258,7 +2335,7 @@ export default function App() {
 
                 {/* 4. Scheduled Date Input */}
                 <div className="hidden sm:block w-full md:w-36">
-                  <label className="block text-[10px] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-date">
+                  <label className="block text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-date">
                     実施予定日
                   </label>
                   <input
@@ -2284,7 +2361,7 @@ export default function App() {
               </form>
 
               {/* Automatic Quadrant classification hint */}
-              <div className="hidden sm:flex mt-3 items-center gap-1 text-[10px] font-bold text-zinc-400 dark:text-zinc-500">
+              <div className="hidden sm:flex mt-3 items-center gap-1 text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500">
                 <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
                 <span>自動判定: 第{getTaskQuadrant(quickLetter, quickNumber)}領域 (</span>
                 <span className="text-zinc-500 dark:text-zinc-400">

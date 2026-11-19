@@ -2,6 +2,29 @@
 
 @variant dark (&:where(.dark, .dark *));
 
+/*
+ * 読みやすさのための文字サイズ調整（v0.4.1）
+ * - text-xs を 12px → 13px 相当に底上げ（小さいラベルの最小サイズ確保）
+ * - スマホ幅（〜640px）は基準を 16px → 18px（112.5%）に拡大。rem 指定の全要素が連動して大きくなる
+ * - タブレット（641〜1023px）は 17px、PC は 16px のまま
+ */
+@theme {
+  --text-xs: 0.8125rem;
+  --text-xs--line-height: 1.35;
+}
+
+html {
+  font-size: 100%;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+@media (max-width: 1023px) {
+  html { font-size: 106.25%; }
+}
+@media (max-width: 640px) {
+  html { font-size: 112.5%; }
+}
+
 /* Custom scrollbars and transition tweaks */
 @layer base {
   ::-webkit-scrollbar {

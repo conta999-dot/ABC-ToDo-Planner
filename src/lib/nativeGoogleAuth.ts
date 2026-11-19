@@ -22,7 +22,7 @@ export const nativeAuthErrorMessage = (error: unknown, kind: 'signIn' | 'authori
     case 'NO_ACCOUNT':
       return 'この端末にGoogleアカウントが見つかりません。Androidの「設定 > パスワードとアカウント」でGoogleアカウントを追加してから、もう一度お試しください。';
     case 'MISCONFIGURED':
-      return 'Googleログインの設定がまだ完了していません（アプリの登録情報またはSHA-1の未登録）。開発者に連絡してください。';
+      return 'Googleログインの設定が合っていません。FirebaseのAndroidアプリ（com.conta999.abctodoplanner）にSHA-1が登録されているか確認してください。';
     case 'NEED_INTERACTION':
       return 'Googleドライブへのアクセス許可が必要です。';
     default: {
@@ -30,4 +30,33 @@ export const nativeAuthErrorMessage = (error: unknown, kind: 'signIn' | 'authori
       return `Googleログインに失敗しました。${msg ? `（${msg}）` : ''}`;
     }
   }
+};
+
+/** スクショで原因を特定できるよう、生のエラー情報（コード・クラス・メッセージ）を1つの文字列にする */
+export const errorDetail = (error: unknown): string => {
+  if (error == null) return '';
+  const e = error as {
+    code?: string;
+    message?: string;
+    name?: string;
+    data?: { className?: string; type?: string; message?: string; statusCode?: number; cause?: string };
+    customData?: Record<string, unknown>;
+  };
+  const parts: string[] = [];
+  if (e.code) parts.push(`code=${e.code}`);
+  const d = e.data;
+  if (d?.className) parts.push(d.className.split('.').pop() as string);
+  if (d?.type) parts.push(`type=${d.type}`);
+  if (typeof d?.statusCode === 'number') parts.push(`status=${d.statusCode}`);
+  const msg = d?.message || e.message || (typeof error === 'string' ? error : '');
+  if (msg) parts.push(msg);
+  if (d?.cause) parts.push(`cause=${d.cause}`);
+  if (parts.length === 0) {
+    try {
+      parts.push(JSON.stringify(error));
+    } catch {
+      parts.push(String(error));
+    }
+  }
+  return parts.join(' / ');
 };

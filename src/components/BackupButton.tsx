@@ -3,6 +3,7 @@ import { Download, Upload, Cloud, RefreshCw, LogOut, CheckCircle, ShieldAlert } 
 import { Task, PriorityLetter, TaskQuadrant } from '../types';
 import { getLocalDateString, newTaskId } from '../lib/dates';
 import { initAuth, googleSignIn, logout as googleLogout, getAccessToken } from '../lib/firebase';
+import { errorDetail } from '../lib/nativeGoogleAuth';
 import { findBackupFile, downloadBackupFile, createBackupFile, updateBackupFile, mergeTasks } from '../lib/drive';
 import { User } from 'firebase/auth';
 
@@ -28,6 +29,12 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
     return saved !== 'false'; // デフォルトは有効
   });
   const [syncError, setSyncError] = useState<string | null>(null);
+  /** エラーメッセージに生の詳細（コード等）を付けて表示する */
+  const withDetail = (err: any, fallback: string) => {
+    const msg = err?.message || fallback;
+    const detail = err?.detail || errorDetail(err);
+    return detail && detail !== msg ? `${msg}\n詳細: ${detail}` : msg;
+  };
   const [syncSuccess, setSyncSuccess] = useState<boolean>(false);
 
   // 自動同期の無限ループ防止用。最後に処理したタスク配列のJSON文字列
@@ -100,7 +107,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
         setTimeout(() => setSyncSuccess(false), 3000);
       } catch (err: any) {
         console.error('自動同期エラー:', err);
-        setSyncError(err.message || '自動同期中にエラーが発生しました。');
+        setSyncError(withDetail(err, '自動同期中にエラーが発生しました。'));
       } finally {
         setIsSyncing(false);
       }
@@ -126,7 +133,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
       }
     } catch (err: any) {
       console.error('ログイン失敗:', err);
-      setSyncError(err.message || 'Googleログインに失敗しました。');
+      setSyncError(withDetail(err, 'Googleログインに失敗しました。'));
     } finally {
       setIsLoggingIn(false);
     }
@@ -154,7 +161,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
       }
       await handleSync(token);
     } catch (err: any) {
-      setSyncError(err.message);
+      setSyncError(withDetail(err, 'Googleドライブの許可に失敗しました。'));
     }
   };
 
@@ -200,7 +207,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
       localStorage.setItem('abc_planner_drive_last_sync_time', nowStr);
     } catch (err: any) {
       console.error('同期エラー:', err);
-      setSyncError(err.message || 'データの同期中にエラーが発生しました。');
+      setSyncError(withDetail(err, 'データの同期中にエラーが発生しました。'));
     } finally {
       setIsSyncing(false);
     }
@@ -384,7 +391,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
 
         {!user ? (
           <div>
-            <p className="text-[11px] text-zinc-500 dark:text-zinc-400 mb-4 leading-relaxed font-semibold">
+            <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 mb-4 leading-relaxed font-semibold">
               Googleアカウントでログインすると、お使いのGoogleドライブに暗号化された安全なバックアップファイルが保存され、他のスマートフォンやPCと自動で双方向同期できます。
             </p>
             
@@ -420,10 +427,10 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
                   </div>
                 )}
                 <div>
-                  <div className="text-[11px] font-bold text-zinc-800 dark:text-zinc-200 leading-tight">
+                  <div className="text-[0.875rem] font-bold text-zinc-800 dark:text-zinc-200 leading-tight">
                     {user.displayName || 'ログイン中のユーザー'}
                   </div>
-                  <div className="text-[9px] font-semibold text-zinc-500 dark:text-zinc-400 leading-none">
+                  <div className="text-[0.75rem] font-semibold text-zinc-500 dark:text-zinc-400 leading-none">
                     {user.email}
                   </div>
                 </div>
@@ -431,7 +438,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
 
               <button
                 onClick={handleLogout}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[10px] font-bold text-zinc-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 dark:text-zinc-400 rounded-md border border-zinc-200 dark:border-zinc-800 hover:border-red-200 dark:hover:border-red-500/20 transition-all self-start sm:self-center"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[0.8125rem] font-bold text-zinc-500 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10 dark:text-zinc-400 rounded-md border border-zinc-200 dark:border-zinc-800 hover:border-red-200 dark:hover:border-red-500/20 transition-all self-start sm:self-center"
                 id="btn-google-signout"
               >
                 <LogOut className="w-3 h-3" />
@@ -439,7 +446,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
               </button>
             </div>
 
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[10px] font-semibold text-zinc-500">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[0.8125rem] font-semibold text-zinc-500">
               <div className="flex items-center gap-1">
                 <span>最終同期日時:</span>
                 <span className="text-zinc-700 dark:text-zinc-300 font-bold">
@@ -463,7 +470,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
                   onChange={handleToggleAutoSync}
                   className="w-4 h-4 text-indigo-600 border-zinc-300 rounded focus:ring-indigo-500 dark:border-zinc-800 dark:bg-zinc-900"
                 />
-                <label htmlFor="auto-sync-checkbox" className="text-[11px] font-bold text-zinc-700 dark:text-zinc-300 cursor-pointer">
+                <label htmlFor="auto-sync-checkbox" className="text-[0.875rem] font-bold text-zinc-700 dark:text-zinc-300 cursor-pointer">
                   タスク変更時に自動同期する (バックアップ)
                 </label>
               </div>
@@ -482,16 +489,16 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
         )}
 
         {syncError && (
-          <div className="mt-3 flex items-start gap-1.5 p-2.5 bg-red-50 dark:bg-red-500/10 border border-red-200/50 dark:border-red-500/20 rounded-lg text-[10px] font-semibold text-red-600 dark:text-red-400">
+          <div className="mt-3 flex items-start gap-1.5 p-2.5 bg-red-50 dark:bg-red-500/10 border border-red-200/50 dark:border-red-500/20 rounded-lg text-sm font-semibold text-red-600 dark:text-red-400">
             <ShieldAlert className="w-4 h-4 shrink-0" />
-            <span>{syncError}</span>
+            <span className="whitespace-pre-wrap break-all select-text">{syncError}</span>
           </div>
         )}
       </div>
 
       {/* 2. 従来のローカルファイルバックアップ機能 */}
       <div className="pt-4 border-t border-zinc-200/50 dark:border-zinc-800" id="local-backup-section">
-        <h4 className="text-[10px] font-bold text-zinc-400 dark:text-zinc-500 mb-3.5 uppercase tracking-wider">
+        <h4 className="text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-3.5 uppercase tracking-wider">
           ローカルファイルとして保存・読込
         </h4>
         <div className="flex flex-wrap gap-2 items-center" id="backup-controls">

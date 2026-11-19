@@ -116,7 +116,7 @@ export default function MatrixView({ tasks, selectedQuadrant, onQuadrantSelect }
                 <p className="text-xs font-semibold mb-1 opacity-95">
                   {quad.description}
                 </p>
-                <p className="text-[11px] opacity-75 line-clamp-2 leading-relaxed">
+                <p className="text-[0.875rem] opacity-75 line-clamp-2 leading-relaxed">
                   {quad.subtext}
                 </p>
               </div>
@@ -140,12 +140,12 @@ export default function MatrixView({ tasks, selectedQuadrant, onQuadrantSelect }
 
                 {quad.stats.total > 0 && (
                   <div className="flex -space-x-1 overflow-hidden max-w-[120px] items-center gap-1">
-                    <span className="text-[10px] text-zinc-400 font-medium">プレビュー ({quad.stats.tasks.length}):</span>
+                    <span className="text-[0.8125rem] text-zinc-400 font-medium">プレビュー ({quad.stats.tasks.length}):</span>
                     <div className="flex gap-1 overflow-x-auto max-w-[80px] scrollbar-none">
                       {quad.stats.tasks.slice(0, 3).map((t) => (
                         <span
                           key={t.id}
-                          className={`text-[9px] font-black px-1 py-0.5 rounded ${
+                          className={`text-[0.75rem] font-black px-1 py-0.5 rounded ${
                             t.status === 'completed'
                               ? 'bg-zinc-200 text-zinc-500 line-through'
                               : 'bg-zinc-800 text-white dark:bg-zinc-200 dark:text-zinc-900'
