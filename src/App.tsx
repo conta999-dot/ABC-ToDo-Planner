@@ -36,9 +36,17 @@ import { initAuth, googleSignIn, logout as firebaseLogout } from './lib/firebase
 import {
   buildEventTitle,
   exportableTasks,
-  exportCompletedTasksToCalendar,
+  exportCompletedTasksToDeviceCalendar,
+  ensureCalendarPermission,
+  listWritableCalendars,
+  pickDefaultCalendar,
+  openCalendarAppSettings,
+  isCalendarExportAvailable,
   CalendarError,
+  DeviceCalendarInfo,
+  PERMISSION_GUIDE,
   CALENDAR_PREFIX_STORAGE_KEY,
+  CALENDAR_ID_STORAGE_KEY,
   DEFAULT_CALENDAR_PREFIX,
 } from './lib/calendar';
 import { errorDetail } from './lib/nativeGoogleAuth';
@@ -348,7 +356,15 @@ export default function App() {
     }
   });
   const [isExporting, setIsExporting] = useState(false);
-  const [exportProgress, setExportProgress] = useState<{ done: number; total: number } | null>(null);
+  const [deviceCalendars, setDeviceCalendars] = useState<DeviceCalendarInfo[] | null>(null);
+  const [calendarPermission, setCalendarPermission] = useState<'unknown' | 'granted' | 'denied'>('unknown');
+  const [selectedCalendarId, setSelectedCalendarId] = useState<string>(() => {
+    try {
+      return localStorage.getItem(CALENDAR_ID_STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
   const [exportSummary, setExportSummary] = useState<string | null>(null);
   // ビルドバージョン（Android はアプリ情報、Web はビルド時に埋め込んだ値）
   const [appVersionLabel, setAppVersionLabel] = useState<string>(`${__APP_VERSION__}（Web ビルド ${__BUILD_COMMIT__}・${__BUILD_TIME__}）`);
@@ -431,6 +447,14 @@ export default function App() {
       // ignore
     }
   }, [calendarPrefix]);
+
+  useEffect(() => {
+    try {
+      if (selectedCalendarId) localStorage.setItem(CALENDAR_ID_STORAGE_KEY, selectedCalendarId);
+    } catch {
+      // ignore
+    }
+  }, [selectedCalendarId]);
 
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
@@ -702,42 +726,104 @@ export default function App() {
 
   const calendarTargets = exportableTasks(tasks);
 
-  /** 完了タスクを Google カレンダーへ終日予定としてエクスポート */
+  /** 権限が許可されていない時の案内（設定画面を開くか確認） */
+  const showCalendarPermissionGuide = () => {
+    setCalendarPermission('denied');
+    if (window.confirm(`${PERMISSION_GUIDE}\n\n「OK」を押すと、このアプリの設定画面（手順4の画面の1つ手前）を開きます。`)) {
+      void openCalendarAppSettings().catch(() => undefined);
+    }
+  };
+
+  /** 端末のカレンダー一覧を読み込み、未選択（または消えた）なら既定のカレンダーを選ぶ */
+  const loadDeviceCalendars = async (requestIfNeeded: boolean): Promise<DeviceCalendarInfo[] | null> => {
+    if (!isCalendarExportAvailable()) return null;
+    try {
+      const granted = requestIfNeeded ? await ensureCalendarPermission() : false;
+      if (requestIfNeeded && !granted) {
+        showCalendarPermissionGuide();
+        return null;
+      }
+      const list = await listWritableCalendars();
+      setCalendarPermission('granted');
+      setDeviceCalendars(list);
+      if (list.length > 0 && !list.some((c) => c.id === selectedCalendarId)) {
+        const def = pickDefaultCalendar(list, authUserRef.current?.email);
+        if (def) setSelectedCalendarId(def.id);
+      }
+      return list;
+    } catch (error: unknown) {
+      if (error instanceof CalendarError && error.code === 'PERMISSION_DENIED') {
+        if (requestIfNeeded) showCalendarPermissionGuide();
+        else setCalendarPermission('unknown');
+        return null;
+      }
+      const message = error instanceof Error ? error.message : 'カレンダー一覧を取得できませんでした。';
+      const detail = error instanceof CalendarError ? error.detail : errorDetail(error);
+      setErrorDialog({ title: 'カレンダーの読み込みエラー', message, detail });
+      return null;
+    }
+  };
+
+  // 設定画面を開いたとき、許可済みならカレンダー一覧を読み込む（許可ダイアログは出さない）
+  useEffect(() => {
+    if (currentView === 'settings' && isCalendarExportAvailable()) {
+      void loadDeviceCalendars(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentView]);
+
+  /** 完了タスクを端末のカレンダーへ終日予定としてエクスポート（Android のみ） */
   const handleExportCalendar = async () => {
-    if (!authUser) {
-      alert('Googleカレンダーへのエクスポートには、Googleアカウントでのログインが必要です。');
+    if (!isCalendarExportAvailable()) {
+      alert('カレンダーへのエクスポートはAndroidアプリで使えます。');
       return;
     }
     if (calendarTargets.length === 0) {
       alert('エクスポートできる完了タスクがありません。');
       return;
     }
+    let list = deviceCalendars;
+    if (calendarPermission !== 'granted' || !list) {
+      list = await loadDeviceCalendars(true);
+      if (!list) return;
+    }
+    if (list.length === 0) {
+      alert('書き込みできるカレンダーが端末に見つかりません。\nGoogleカレンダーアプリを開いて、Googleアカウントのカレンダーが表示されることを確認してから、もう一度お試しください。');
+      return;
+    }
+    const target = list.find((c) => c.id === selectedCalendarId) || pickDefaultCalendar(list, authUser?.email);
+    if (!target) return;
+    if (target.id !== selectedCalendarId) setSelectedCalendarId(target.id);
+    const calLabel = `${target.displayName}${target.accountName && target.accountName !== target.displayName ? `（${target.accountName}）` : ''}`;
     if (!window.confirm(
-      `完了したタスク ${calendarTargets.length} 件を、Googleカレンダー（${authUser.email || 'ログイン中のアカウント'}）に時間指定なしの予定として登録します。\n\n` +
+      `完了したタスク ${calendarTargets.length} 件を、カレンダー「${calLabel}」に時間指定なしの予定として登録します。\n\n` +
       '・すでに登録済みのタスクは、内容が変わっていれば更新し、同じならスキップします（重複登録はしません）。\n' +
-      '・予定の日付は「完了日」（未入力なら実施予定日）です。\n\nよろしいですか？'
+      '・予定の日付は「完了日」（未入力なら実施予定日）です。\n' +
+      '・Googleアカウントのカレンダーなら、Googleカレンダー側の同期でクラウドにも反映されます。\n\nよろしいですか？'
     )) {
       return;
     }
     setIsExporting(true);
     setExportSummary(null);
-    setExportProgress({ done: 0, total: calendarTargets.length });
     try {
-      const r = await exportCompletedTasksToCalendar(tasks, calendarPrefix, (done, total) => setExportProgress({ done, total }));
+      const r = await exportCompletedTasksToDeviceCalendar(tasks, calendarPrefix, target.id);
       const summary = `新規登録 ${r.created} 件・更新 ${r.updated} 件・スキップ ${r.skipped} 件${r.failed ? `・失敗 ${r.failed} 件` : ''}`;
       setExportSummary(summary);
       if (r.failed) {
-        setErrorDialog({ title: 'エクスポートの一部が失敗しました', message: summary, detail: r.errors.join('\n') });
+        setErrorDialog({ title: 'エクスポートの一部が失敗しました', message: summary, detail: (r.errors || []).join('\n') });
       } else {
-        alert(`Googleカレンダーへのエクスポートが完了しました。\n${summary}`);
+        alert(`カレンダー「${target.displayName}」へのエクスポートが完了しました。\n${summary}`);
       }
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Googleカレンダーへのエクスポートに失敗しました。';
-      const detail = error instanceof CalendarError ? error.detail : errorDetail(error);
-      setErrorDialog({ title: 'エクスポートエラー', message, detail });
+      if (error instanceof CalendarError && error.code === 'PERMISSION_DENIED') {
+        showCalendarPermissionGuide();
+      } else {
+        const message = error instanceof Error ? error.message : 'カレンダーへのエクスポートに失敗しました。';
+        const detail = error instanceof CalendarError ? error.detail : errorDetail(error);
+        setErrorDialog({ title: 'エクスポートエラー', message, detail });
+      }
     } finally {
       setIsExporting(false);
-      setExportProgress(null);
     }
   };
 
@@ -2255,15 +2341,53 @@ export default function App() {
               </div>
             </div>
 
-            {/* Google カレンダーへエクスポート */}
+            {/* カレンダーへエクスポート（Android のみ・端末内カレンダーへ書き込み） */}
             <div className="mb-6" id="settings-export">
               <h3 className="text-xs font-bold text-zinc-400 dark:text-zinc-500 mb-2.5 uppercase tracking-wider">
-                エクスポート（Googleカレンダー）
+                エクスポート（カレンダー）
               </h3>
+              {!isCalendarExportAvailable() ? (
+                <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl text-[0.875rem] font-semibold text-zinc-500 dark:text-zinc-400 flex items-start gap-2" id="calendar-export-web-note">
+                  <CalendarPlus className="w-4 h-4 mt-0.5 flex-none" />
+                  <span>カレンダーへのエクスポートはAndroidアプリで使えます。</span>
+                </div>
+              ) : (
               <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl flex flex-col gap-3">
                 <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
-                  完了したタスクだけを、Googleカレンダーに時間指定なし（終日）の予定として登録します。予定の日付は完了日（未入力なら実施予定日）、予定の詳細にはタスクの「メモ・詳細」が入ります。2回目以降は登録済みの予定を更新し、重複登録はしません。
+                  完了したタスクだけを、この端末のカレンダーに時間指定なし（終日）の予定として登録します。Googleアカウントのカレンダーを選べば、Googleカレンダーの同期でクラウドにも反映されます。予定の日付は完了日（未入力なら実施予定日）、予定の詳細にはタスクの「メモ・詳細」が入ります。2回目以降は登録済みの予定を更新し、重複登録はしません。
                 </p>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-300 mb-1" htmlFor="calendar-select">
+                    登録先のカレンダー
+                  </label>
+                  {deviceCalendars && deviceCalendars.length > 0 ? (
+                    <select
+                      id="calendar-select"
+                      value={selectedCalendarId}
+                      onChange={(e) => setSelectedCalendarId(e.target.value)}
+                      className="w-full px-3 py-2 text-sm bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none font-semibold"
+                    >
+                      {deviceCalendars.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.displayName}{c.accountName && c.accountName !== c.displayName ? `（${c.accountName}）` : ''}{c.isPrimary ? ' ★' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  ) : deviceCalendars && deviceCalendars.length === 0 ? (
+                    <div className="text-[0.8125rem] font-semibold text-amber-700 dark:text-amber-400">
+                      書き込みできるカレンダーが見つかりません。Googleカレンダーアプリを開いて、Googleアカウントのカレンダーが表示されることを確認してください。
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void loadDeviceCalendars(true)}
+                      className="px-4 py-2 border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 rounded-xl text-xs font-bold"
+                      id="btn-calendar-permission"
+                    >
+                      {calendarPermission === 'denied' ? 'カレンダーへのアクセスを許可する（設定の案内）' : 'カレンダーへのアクセスを許可して一覧を読み込む'}
+                    </button>
+                  )}
+                </div>
                 <div>
                   <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-300 mb-1" htmlFor="calendar-prefix">
                     プレフィックス（予定名の先頭に付ける文字）
@@ -2296,9 +2420,7 @@ export default function App() {
                     id="btn-export-calendar"
                   >
                     <CalendarPlus className="w-4 h-4" />
-                    {isExporting
-                      ? `エクスポート中… ${exportProgress ? `${exportProgress.done}/${exportProgress.total}` : ''}`
-                      : 'カレンダーへエクスポート'}
+                    {isExporting ? 'エクスポート中…' : 'カレンダーへエクスポート'}
                   </button>
                   <span className="text-[0.8125rem] font-semibold text-zinc-500 dark:text-zinc-400">
                     対象: 完了タスク {calendarTargets.length} 件
@@ -2310,6 +2432,7 @@ export default function App() {
                   </div>
                 )}
               </div>
+              )}
             </div>
 
             {/* Theme setting */}

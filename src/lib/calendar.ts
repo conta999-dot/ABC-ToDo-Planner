@@ -1,24 +1,67 @@
-import { Capacitor } from '@capacitor/core';
-import { GoogleAuthProvider, reauthenticateWithPopup, signInWithPopup } from 'firebase/auth';
+import { Capacitor, registerPlugin } from '@capacitor/core';
+import type { PermissionState } from '@capacitor/core';
 import { Task } from '../types';
-import { auth } from './firebase';
-import { NativeGoogleAuth, errorDetail } from './nativeGoogleAuth';
-import { addDays } from './dates';
+import { errorDetail } from './nativeGoogleAuth';
 
-export const CALENDAR_SCOPE = 'https://www.googleapis.com/auth/calendar.events';
-const API = 'https://www.googleapis.com/calendar/v3/calendars/primary/events';
-/** アプリが作った予定の目印（extendedProperties.private） */
-const APP_MARK_KEY = 'abcTodoPlanner';
-const TASK_ID_KEY = 'abcTaskId';
+/**
+ * 完了タスクを Android 端末内のカレンダー（CalendarContract）へ終日予定として書き込む。
+ * Google アカウントのカレンダーを選べば、クラウドへの同期は端末の Google カレンダー側が行う。
+ * Web 版ではエクスポートは使えない（Google Calendar API は使わない）。
+ */
+
+export interface DeviceCalendarInfo {
+  id: string;
+  displayName: string;
+  accountName: string;
+  accountType: string;
+  isPrimary: boolean;
+  color: string | null;
+  visible: boolean;
+}
+
+export interface UpsertResult {
+  created: number;
+  updated: number;
+  skipped: number;
+  failed: number;
+  errors: string[];
+}
+
+interface DeviceCalendarPlugin {
+  checkPermissions(): Promise<{ calendar: PermissionState }>;
+  requestPermissions(): Promise<{ calendar: PermissionState }>;
+  openAppSettings(): Promise<void>;
+  listCalendars(): Promise<{ calendars: DeviceCalendarInfo[] }>;
+  upsertEvents(options: {
+    calendarId: string;
+    events: { taskId: string; title: string; description: string; date: string }[];
+  }): Promise<UpsertResult>;
+}
+
+const DeviceCalendar = registerPlugin<DeviceCalendarPlugin>('DeviceCalendar');
+
+export const isCalendarExportAvailable = () => Capacitor.getPlatform() === 'android';
 
 export const CALENDAR_PREFIX_STORAGE_KEY = 'abc_calendar_prefix';
+export const CALENDAR_ID_STORAGE_KEY = 'abc_calendar_id';
 export const DEFAULT_CALENDAR_PREFIX = '[ABC]';
+
+export const PERMISSION_GUIDE =
+  'カレンダーへのアクセスが許可されていません。次の手順で許可してから、もう一度お試しください。\n' +
+  '1. Android の「設定」アプリを開く\n' +
+  '2.「アプリ」をタップ（機種により「アプリと通知」）\n' +
+  '3. 一覧から「ABC ToDo Planner」をタップ（見つからなければ「○○個のアプリをすべて表示」をタップ）\n' +
+  '4.「権限」をタップ\n' +
+  '5.「カレンダー」をタップ\n' +
+  '6.「許可」を選ぶ';
 
 export class CalendarError extends Error {
   detail: string;
-  constructor(message: string, detail: string) {
+  code: string;
+  constructor(message: string, detail: string, code = 'FAILED') {
     super(message);
     this.detail = detail;
+    this.code = code;
   }
 }
 
@@ -38,195 +81,58 @@ export const buildEventTitle = (task: Pick<Task, 'title' | 'priorityLetter' | 'p
 export const eventDateOf = (task: Task): string => task.completedDate || task.dueDate || (task.completedAt ? task.completedAt.slice(0, 10) : '');
 
 export const exportableTasks = (tasks: Task[]): Task[] =>
-  tasks.filter((t) => t.status === 'completed' && !!eventDateOf(t) && !!(t.title || '').trim());
+  tasks.filter((t) => t.status === 'completed' && /^\d{4}-\d{2}-\d{2}$/.test(eventDateOf(t)) && !!(t.title || '').trim());
 
-// ---------------- アクセストークン ----------------
-let webToken: { token: string; expiresAt: number } | null = null;
+const toCalendarError = (error: unknown, stage: string): CalendarError => {
+  const code = (error as { code?: string } | null)?.code || 'FAILED';
+  if (code === 'PERMISSION_DENIED') return new CalendarError(PERMISSION_GUIDE, `[${stage}] ${errorDetail(error)}`, code);
+  return new CalendarError(`カレンダーの${stage}に失敗しました。`, `[${stage}] ${errorDetail(error)}`, code);
+};
 
-const getCalendarAccessToken = async (): Promise<string> => {
-  if (!auth.currentUser) {
-    throw new CalendarError('Googleアカウントでログインしてからエクスポートしてください。', 'not-signed-in');
-  }
-  if (Capacitor.isNativePlatform()) {
-    try {
-      const { accessToken } = await NativeGoogleAuth.authorize({ scopes: [CALENDAR_SCOPE], interactive: true });
-      return accessToken;
-    } catch (error) {
-      const code = (error as { code?: string } | null)?.code;
-      const msg =
-        code === 'CANCELLED'
-          ? 'Googleカレンダーへのアクセス許可がキャンセルされました。'
-          : code === 'MISCONFIGURED'
-            ? 'Googleカレンダーの許可画面を開けませんでした（Google Cloud の設定を確認してください）。'
-            : 'Googleカレンダーへのアクセス許可を取得できませんでした。';
-      throw new CalendarError(msg, `[カレンダー許可] ${errorDetail(error)}`);
-    }
-  }
-  if (webToken && webToken.expiresAt > Date.now() + 60_000) return webToken.token;
-  const provider = new GoogleAuthProvider();
-  provider.addScope(CALENDAR_SCOPE);
-  provider.setCustomParameters({ login_hint: auth.currentUser.email || '' });
+/** カレンダー権限を確認し、未許可なら許可ダイアログを出す。許可されれば true */
+export const ensureCalendarPermission = async (): Promise<boolean> => {
+  const current = await DeviceCalendar.checkPermissions();
+  if (current.calendar === 'granted') return true;
+  const result = await DeviceCalendar.requestPermissions();
+  return result.calendar === 'granted';
+};
+
+export const openCalendarAppSettings = () => DeviceCalendar.openAppSettings();
+
+/** 書き込みできるカレンダーの一覧（権限が必要） */
+export const listWritableCalendars = async (): Promise<DeviceCalendarInfo[]> => {
   try {
-    let result;
-    try {
-      result = await reauthenticateWithPopup(auth.currentUser, provider);
-    } catch (error) {
-      const code = (error as { code?: string } | null)?.code ?? '';
-      if (code === 'auth/user-mismatch') {
-        throw new CalendarError(
-          `ログイン中のアカウント（${auth.currentUser.email}）と違うアカウントが選ばれました。同じアカウントを選んでください。`,
-          `[カレンダー許可] ${errorDetail(error)}`,
-        );
-      }
-      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
-        throw new CalendarError('Googleカレンダーへのアクセス許可がキャンセルされました。', `[カレンダー許可] ${errorDetail(error)}`);
-      }
-      if (code === 'auth/popup-blocked') {
-        throw new CalendarError('許可画面のポップアップがブロックされました。ブラウザのポップアップ許可を確認してください。', `[カレンダー許可] ${errorDetail(error)}`);
-      }
-      if (code === 'auth/requires-recent-login' || code === 'auth/user-token-expired') {
-        result = await signInWithPopup(auth, provider);
-      } else {
-        throw error;
-      }
-    }
-    const token = GoogleAuthProvider.credentialFromResult(result)?.accessToken;
-    if (!token) throw new CalendarError('Googleカレンダーのアクセストークンを取得できませんでした。', 'no-access-token');
-    webToken = { token, expiresAt: Date.now() + 50 * 60_000 };
-    return token;
+    const { calendars } = await DeviceCalendar.listCalendars();
+    return calendars;
   } catch (error) {
-    if (error instanceof CalendarError) throw error;
-    throw new CalendarError('Googleカレンダーへのアクセス許可を取得できませんでした。', `[カレンダー許可] ${errorDetail(error)}`);
+    throw toCalendarError(error, '一覧の取得');
   }
 };
 
-// ---------------- API ----------------
-interface CalEvent {
-  id: string;
-  summary?: string;
-  description?: string;
-  start?: { date?: string; dateTime?: string };
-  end?: { date?: string };
-  extendedProperties?: { private?: Record<string, string> };
-}
+/** 既定のカレンダー: ログイン中のメールと同じ Google アカウントのメインカレンダー → 主カレンダー → 先頭 */
+export const pickDefaultCalendar = (calendars: DeviceCalendarInfo[], email?: string | null): DeviceCalendarInfo | undefined => {
+  const lower = (s: string) => (s || '').toLowerCase();
+  const isGoogle = (c: DeviceCalendarInfo) => c.accountType === 'com.google';
+  if (email) {
+    const e = lower(email);
+    const own = calendars.filter((c) => isGoogle(c) && lower(c.accountName) === e);
+    const main = own.find((c) => c.isPrimary) || own.find((c) => lower(c.displayName) === e) || own[0];
+    if (main) return main;
+  }
+  return calendars.find((c) => isGoogle(c) && c.isPrimary) || calendars.find((c) => c.isPrimary) || calendars[0];
+};
 
-const apiError = async (res: Response, stage: string): Promise<CalendarError> => {
-  const text = await res.text().catch(() => '');
-  let reason = '';
-  let message = '';
+/** 完了タスクを選択カレンダーへ登録・更新 */
+export const exportCompletedTasksToDeviceCalendar = async (tasks: Task[], prefix: string, calendarId: string): Promise<UpsertResult> => {
+  const events = exportableTasks(tasks).map((task) => ({
+    taskId: task.id,
+    title: buildEventTitle(task, prefix),
+    description: (task.notes || '').trim(),
+    date: eventDateOf(task),
+  }));
   try {
-    const j = JSON.parse(text);
-    message = j?.error?.message || '';
-    reason = j?.error?.errors?.[0]?.reason || j?.error?.status || '';
-    const infoReason = (j?.error?.details || []).find((d: { reason?: string }) => d?.reason)?.reason;
-    if (infoReason) reason = `${reason}/${infoReason}`;
-  } catch {
-    message = text.slice(0, 300);
+    return await DeviceCalendar.upsertEvents({ calendarId, events });
+  } catch (error) {
+    throw toCalendarError(error, '書き込み');
   }
-  const detail = `[${stage}] status=${res.status} ${reason} ${message}`.trim();
-  let friendly = `Googleカレンダーとの通信に失敗しました（${res.status}）。`;
-  if (res.status === 401) friendly = 'Googleカレンダーの許可の有効期限が切れました。もう一度エクスポートしてください。';
-  if (res.status === 403 && /accessNotConfigured|SERVICE_DISABLED|has not been used|is disabled/i.test(text)) {
-    friendly = 'Google Cloud で「Google Calendar API」が有効になっていません。設定手順に沿って有効にしてから、もう一度お試しください。';
-  } else if (res.status === 403 && /insufficient|scope/i.test(text)) {
-    friendly = 'Googleカレンダーへの書き込み許可がありません。許可画面で「カレンダーの予定の表示と編集」にチェックを入れてください。';
-  } else if (res.status === 403 && /rateLimit|quota/i.test(text)) {
-    friendly = 'Googleカレンダーの利用回数の上限に達しました。少し時間をおいてから、もう一度お試しください。';
-  }
-  if (res.status === 401) webToken = null;
-  return new CalendarError(friendly, detail);
-};
-
-const listAppEvents = async (token: string): Promise<Map<string, CalEvent>> => {
-  const map = new Map<string, CalEvent>();
-  let pageToken = '';
-  do {
-    const params = new URLSearchParams({
-      privateExtendedProperty: `${APP_MARK_KEY}=1`,
-      maxResults: '2500',
-      singleEvents: 'false',
-      showDeleted: 'false',
-    });
-    if (pageToken) params.set('pageToken', pageToken);
-    const res = await fetch(`${API}?${params.toString()}`, { headers: { Authorization: `Bearer ${token}` } });
-    if (!res.ok) throw await apiError(res, '既存予定の確認');
-    const data = await res.json();
-    for (const ev of (data.items || []) as CalEvent[]) {
-      const tid = ev.extendedProperties?.private?.[TASK_ID_KEY];
-      if (tid && !map.has(tid)) map.set(tid, ev);
-    }
-    pageToken = data.nextPageToken || '';
-  } while (pageToken);
-  return map;
-};
-
-export interface ExportResult {
-  created: number;
-  updated: number;
-  skipped: number;
-  failed: number;
-  errors: string[];
-}
-
-/** 完了タスクを Google カレンダー（メイン）に終日予定として登録・更新する */
-export const exportCompletedTasksToCalendar = async (
-  tasks: Task[],
-  prefix: string,
-  onProgress?: (done: number, total: number) => void,
-): Promise<ExportResult> => {
-  const targets = exportableTasks(tasks);
-  const token = await getCalendarAccessToken();
-  const existing = await listAppEvents(token);
-  const result: ExportResult = { created: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
-
-  let done = 0;
-  for (const task of targets) {
-    const date = eventDateOf(task);
-    const body = {
-      summary: buildEventTitle(task, prefix),
-      description: (task.notes || '').trim(),
-      start: { date },
-      end: { date: addDays(date, 1) },
-      transparency: 'transparent',
-      extendedProperties: { private: { [APP_MARK_KEY]: '1', [TASK_ID_KEY]: task.id } },
-    };
-    const ev = existing.get(task.id);
-    try {
-      if (ev) {
-        const same =
-          (ev.summary || '') === body.summary &&
-          (ev.description || '') === body.description &&
-          ev.start?.date === date;
-        if (same) {
-          result.skipped += 1;
-        } else {
-          const res = await fetch(`${API}/${encodeURIComponent(ev.id)}`, {
-            method: 'PATCH',
-            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify(body),
-          });
-          if (!res.ok) throw await apiError(res, '予定の更新');
-          result.updated += 1;
-        }
-      } else {
-        const res = await fetch(API, {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!res.ok) throw await apiError(res, '予定の登録');
-        result.created += 1;
-      }
-    } catch (error) {
-      // API 無効・権限なしなど全件に共通するエラーは即中断
-      if (error instanceof CalendarError && /status=(401|403)/.test(error.detail) && result.created + result.updated === 0) {
-        throw error;
-      }
-      result.failed += 1;
-      result.errors.push(`${task.title}: ${error instanceof CalendarError ? error.detail : errorDetail(error)}`);
-    }
-    done += 1;
-    onProgress?.(done, targets.length);
-  }
-  return result;
 };
