@@ -117,10 +117,11 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
       const result = await googleSignIn();
       if (result) {
         setUser(result.user);
-        if (result.accessToken) {
-          await handleSync(result.accessToken);
+        const driveToken = result.accessToken ?? (await getAccessToken({ interactive: true }).catch(() => null));
+        if (driveToken) {
+          await handleSync(driveToken);
         } else {
-          setSyncError('ログインは成功しましたが、Googleドライブ用のトークンがありません。クラウド同期は利用できます。ドライブバックアップは再ログインするか、Web版から操作してください。');
+          setSyncError('ログインは成功しましたが、Googleドライブ用のトークンがありません。クラウド同期は利用できます。ドライブバックアップは「今すぐ同期実行」を押して、表示されたGoogleの画面で許可してください。');
         }
       }
     } catch (err: any) {

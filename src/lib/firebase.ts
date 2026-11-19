@@ -10,9 +10,9 @@ import {
 } from 'firebase/auth';
 import { initializeFirestore, persistentLocalCache } from 'firebase/firestore';
 import { Capacitor } from '@capacitor/core';
-import { Browser } from '@capacitor/browser';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { AUTH_BRIDGE_URL, LOOPBACK_AUTH_PATH, LOOPBACK_AUTH_PORT, LoopbackAuth } from './loopbackAuth';
+import { GOOGLE_WEB_CLIENT_ID } from './authConfig';
+import { NativeGoogleAuth, nativeAuthErrorMessage } from './nativeGoogleAuth';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
@@ -48,46 +48,53 @@ export const initAuth = (
   });
 };
 
-const signInWithSystemBrowser = async (): Promise<{ user: User; accessToken: string | null }> => {
-  await LoopbackAuth.start({
-    port: LOOPBACK_AUTH_PORT,
-    path: LOOPBACK_AUTH_PATH,
-  });
+const toFriendlyError = (error: unknown, kind: 'signIn' | 'authorize') => {
+  const e = new Error(nativeAuthErrorMessage(error, kind)) as Error & { code?: string };
+  e.code = (error as { code?: string } | null)?.code;
+  return e;
+};
+
+/** Android: ネイティブ Drive 権限（drive.file）でアクセストークンを取得 */
+const nativeAuthorizeDrive = async (interactive: boolean): Promise<string | null> => {
   try {
-    await Browser.open({ url: AUTH_BRIDGE_URL });
-    const { requestUri } = await LoopbackAuth.waitForCallback({ timeoutMs: 180000 });
-    try {
-      await Browser.close();
-    } catch {
-      // Custom Tabs may already have been dismissed.
-    }
-
-    const callback = new URL(requestUri);
-    const oauthError = callback.searchParams.get('error');
-    if (oauthError) {
-      if (oauthError === 'access_denied') {
-        throw new Error('ログインがキャンセルされました。');
-      }
-      throw new Error(`Googleログインに失敗しました（${oauthError}）。`);
-    }
-
-    const idToken = callback.searchParams.get('id_token');
-    const accessToken = callback.searchParams.get('access_token');
-    if (!idToken) {
-      throw new Error('Googleからの認証結果を受け取れませんでした。');
-    }
-
-    const credential = GoogleAuthProvider.credential(idToken, accessToken || undefined);
-    const userCred = await signInWithCredential(auth, credential);
+    const { accessToken } = await NativeGoogleAuth.authorize({ scopes: [DRIVE_SCOPE], interactive });
     cachedAccessToken = accessToken;
-    return { user: userCred.user, accessToken: cachedAccessToken };
-  } finally {
-    try {
-      await LoopbackAuth.stop();
-    } catch {
-      // ignore
+    return accessToken;
+  } catch (error) {
+    const code = (error as { code?: string } | null)?.code;
+    if (!interactive && code === 'NEED_INTERACTION') return null;
+    if (!interactive) {
+      console.warn('Driveトークンのサイレント取得に失敗:', error);
+      return null;
     }
+    throw toFriendlyError(error, 'authorize');
   }
+};
+
+/** Android: Credential Manager によるネイティブ Google ログイン */
+const signInWithNativeGoogle = async (): Promise<{ user: User; accessToken: string | null }> => {
+  if (!GOOGLE_WEB_CLIENT_ID || GOOGLE_WEB_CLIENT_ID === 'REPLACE_ME') {
+    throw toFriendlyError({ code: 'MISCONFIGURED' }, 'signIn');
+  }
+  let idToken: string;
+  try {
+    ({ idToken } = await NativeGoogleAuth.signIn({ serverClientId: GOOGLE_WEB_CLIENT_ID }));
+  } catch (error) {
+    throw toFriendlyError(error, 'signIn');
+  }
+  let userCred;
+  try {
+    userCred = await signInWithCredential(auth, GoogleAuthProvider.credential(idToken));
+  } catch (error) {
+    const code = (error as { code?: string } | null)?.code ?? '';
+    if (code === 'auth/invalid-credential' || code === 'auth/operation-not-allowed' || code === 'auth/invalid-api-key') {
+      throw toFriendlyError({ code: 'MISCONFIGURED' }, 'signIn');
+    }
+    throw toFriendlyError(error, 'signIn');
+  }
+  // Drive 権限は付与済みなら静かに取得（未許可なら手動同期時に許可画面を出す）
+  const accessToken = await nativeAuthorizeDrive(false);
+  return { user: userCred.user, accessToken };
 };
 
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string | null } | null> => {
@@ -95,7 +102,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     isSigningIn = true;
 
     if (Capacitor.isNativePlatform()) {
-      return await signInWithSystemBrowser();
+      return await signInWithNativeGoogle();
     }
 
     const result = await signInWithPopup(auth, provider);
@@ -111,17 +118,22 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 };
 
 export const getAccessToken = async (options?: { interactive?: boolean }): Promise<string | null> => {
-  if (cachedAccessToken) {
-    return cachedAccessToken;
-  }
-  if (options?.interactive && Capacitor.isNativePlatform() && auth.currentUser) {
-    const result = await signInWithSystemBrowser();
-    return result.accessToken;
+  if (Capacitor.isNativePlatform()) {
+    // AuthorizationClient はキャッシュ済みの有効なトークンを返すため毎回問い合わせる
+    if (!auth.currentUser) return null;
+    return await nativeAuthorizeDrive(!!options?.interactive);
   }
   return cachedAccessToken;
 };
 
 export const logout = async () => {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      await NativeGoogleAuth.signOut();
+    } catch {
+      // ignore
+    }
+  }
   await signOut(auth);
   cachedAccessToken = null;
 };
