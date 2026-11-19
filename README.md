@@ -5,7 +5,9 @@
 - アプリ名: **ABC Planner**
 - Google Play 掲載名（予定）: **ABC ToDo Planner**
 - パッケージ ID: `com.conta999.abcplanner`
-- バージョン: 0.2.0
+- バージョン: 0.3.0
+- Firebase プロジェクト: `abc-todo-planner-1b179`
+- PC 版: https://conta999-dot.github.io/ABC-ToDo-Planner/
 
 PC のブラウザと Android アプリで、同じ Google アカウントにログインすると Firestore で双方向同期します。未ログイン時は、その端末内にだけ保存します。
 
@@ -14,21 +16,14 @@ Web 版は Firebase の Web 用クライアント設定（`firebase-applet-confi
 ## ログインの仕組み
 
 - **PC（ブラウザ）**: Firebase Auth の Google ポップアップで、その場で選んだアカウントにログインします。
-- **Android**: `google-services.json` をアプリに入れてビルドする方式は使いません。ログイン時にシステムのブラウザ（Chrome Custom Tabs）で Google の公式ログイン画面を開き、選んだアカウントの ID トークンを `signInWithCredential` で Firebase Auth に渡します。戻り先は端末内の `http://127.0.0.1:41827/auth/callback` です。Google ドライブのバックアップ用トークンは、必要なときに同じ流れで取得します。
+- **Android**: `google-services.json` は使いません。システムのブラウザで、GitHub Pages 上のログイン用ページ（`auth.html`）を開きます。そこから Firebase 標準の `signInWithRedirect`（リダイレクト先は `https://abc-todo-planner-1b179.firebaseapp.com/__/auth/handler`）で Google の公式画面を表示し、選んだアカウントの ID トークンを端末内の `http://127.0.0.1:41827/auth/callback` 経由でアプリに戻し、`signInWithCredential` します。Google Cloud で Android アプリや SHA-1、OAuth のリダイレクト URI を追加する必要はありません。
 
-## 必要要件（一度だけ、Firebase / Google Cloud コンソール）
+## 必要要件（一度だけ、Firebase コンソール）
 
-このリポジトリからは Firebase へのデプロイを行いません。同期と Android の Google ログインを有効にするには、プロジェクト `possible-retina-6mln4` で次を実施してください。
+Firebase CLI からのデプロイは行いません。次をコンソールで実施してください。
 
-1. Firestore を **Native モード** で有効化する。
-2. `firestore.rules` の内容を公開する（各ユーザーは `users/{uid}/**` だけ読み書きできるルール）。
-3. Authentication で Google ログインを有効にする（Web ではすでに使っている場合あり）。
-4. 承認済みドメインに、使う Web のドメインと `localhost`、必要なら `127.0.0.1` を追加する。
-5. **Android のログイン用（重要）**: Google Cloud Console の「API とサービス」→「認証情報」で、Firebase の Google ログインが使っている **ウェブ アプリケーション** の OAuth クライアントを開き、承認済みのリダイレクト URI に次を追加する。
-   - `http://127.0.0.1:41827/auth/callback`
-   - クライアント ID の目安: `732782608365-qooa5q4opd01vd1qr0bdb60su5ck0m7a.apps.googleusercontent.com`（Firebase が自動作成したウェブ用クライアント）
-
-Android アプリを Firebase に追加したり、SHA-1 を登録したり、`google-services.json` をビルドに入れたりする必要はありません。
+1. [Firestore のルール](https://console.firebase.google.com/project/abc-todo-planner-1b179/firestore/rules) に、リポジトリの `firestore.rules` を貼って公開する（各ユーザーは `users/{uid}/**` だけ読み書きできるルール）。
+2. [Authentication の設定](https://console.firebase.google.com/project/abc-todo-planner-1b179/authentication/settings) の「承認済みドメイン」に `conta999-dot.github.io` を追加する（`localhost` は通常すでにあります）。
 
 ## 開発
 

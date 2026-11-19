@@ -12,7 +12,7 @@ import { initializeFirestore, persistentLocalCache } from 'firebase/firestore';
 import { Capacitor } from '@capacitor/core';
 import { Browser } from '@capacitor/browser';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { LOOPBACK_AUTH_PATH, LOOPBACK_AUTH_PORT, LOOPBACK_CONTINUE_URI, LoopbackAuth } from './loopbackAuth';
+import { AUTH_BRIDGE_URL, LOOPBACK_AUTH_PATH, LOOPBACK_AUTH_PORT, LoopbackAuth } from './loopbackAuth';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
@@ -22,17 +22,12 @@ export const db = initializeFirestore(app, {
 });
 
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
-const OAUTH_SCOPES = [
-  'openid',
-  'https://www.googleapis.com/auth/userinfo.email',
-  'https://www.googleapis.com/auth/userinfo.profile',
-  DRIVE_SCOPE,
-].join(' ');
 
 export const provider = new GoogleAuthProvider();
 provider.addScope(DRIVE_SCOPE);
 provider.addScope('https://www.googleapis.com/auth/userinfo.email');
 provider.addScope('https://www.googleapis.com/auth/userinfo.profile');
+provider.setCustomParameters({ prompt: 'select_account' });
 
 export const isFirebaseAvailable = true;
 
@@ -53,62 +48,13 @@ export const initAuth = (
   });
 };
 
-const createAuthUri = async (continueUri: string): Promise<{ authUri: string; sessionId: string }> => {
-  const response = await fetch(
-    `https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri?key=${encodeURIComponent(firebaseConfig.apiKey)}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        continueUri,
-        providerId: 'google.com',
-        authType: 'signInWithRedirect',
-        oauthScope: OAUTH_SCOPES,
-      }),
-    }
-  );
-  const data = await response.json() as { authUri?: string; sessionId?: string; error?: { message?: string } };
-  if (!response.ok || !data.authUri || !data.sessionId) {
-    throw new Error(data.error?.message || 'Googleログイン用のURLを作成できませんでした。');
-  }
-  return { authUri: data.authUri, sessionId: data.sessionId };
-};
-
-const signInWithIdp = async (requestUri: string, sessionId: string) => {
-  const response = await fetch(
-    `https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=${encodeURIComponent(firebaseConfig.apiKey)}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        requestUri,
-        sessionId,
-        returnSecureToken: true,
-        returnIdpCredential: true,
-      }),
-    }
-  );
-  const data = await response.json() as {
-    error?: { message?: string };
-    oauthIdToken?: string;
-    oauthAccessToken?: string;
-    idToken?: string;
-  };
-  if (!response.ok) {
-    throw new Error(data.error?.message || 'Googleアカウントでの認証に失敗しました。');
-  }
-  return data;
-};
-
 const signInWithSystemBrowser = async (): Promise<{ user: User; accessToken: string | null }> => {
-  const started = await LoopbackAuth.start({
+  await LoopbackAuth.start({
     port: LOOPBACK_AUTH_PORT,
     path: LOOPBACK_AUTH_PATH,
   });
-  const continueUri = started.continueUri || LOOPBACK_CONTINUE_URI;
   try {
-    const { authUri, sessionId } = await createAuthUri(continueUri);
-    await Browser.open({ url: authUri });
+    await Browser.open({ url: AUTH_BRIDGE_URL });
     const { requestUri } = await LoopbackAuth.waitForCallback({ timeoutMs: 180000 });
     try {
       await Browser.close();
@@ -124,17 +70,16 @@ const signInWithSystemBrowser = async (): Promise<{ user: User; accessToken: str
       }
       throw new Error(`Googleログインに失敗しました（${oauthError}）。`);
     }
-    if (!callback.searchParams.get('code') && !callback.searchParams.get('id_token')) {
+
+    const idToken = callback.searchParams.get('id_token');
+    const accessToken = callback.searchParams.get('access_token');
+    if (!idToken) {
       throw new Error('Googleからの認証結果を受け取れませんでした。');
     }
 
-    const idp = await signInWithIdp(requestUri, sessionId);
-    if (!idp.oauthIdToken) {
-      throw new Error('Google IDトークンを取得できませんでした。');
-    }
-    const credential = GoogleAuthProvider.credential(idp.oauthIdToken, idp.oauthAccessToken);
+    const credential = GoogleAuthProvider.credential(idToken, accessToken || undefined);
     const userCred = await signInWithCredential(auth, credential);
-    cachedAccessToken = idp.oauthAccessToken ?? null;
+    cachedAccessToken = accessToken;
     return { user: userCred.user, accessToken: cachedAccessToken };
   } finally {
     try {

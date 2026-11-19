@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ABC Planner ログイン</title>
+    <style>
+      body { font-family: sans-serif; background: #fafafa; color: #18181b; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; }
+      #status { font-size: 16px; font-weight: 600; }
+      #detail { margin-top: 12px; font-size: 13px; color: #52525b; max-width: 28rem; }
+    </style>
+  </head>
+  <body>
+    <div>
+      <div id="status">Googleに接続しています…</div>
+      <div id="detail">アカウントを選んだら、自動でアプリに戻ります。</div>
+    </div>
+    <script type="module" src="/src/auth-bridge.ts"></script>
+  </body>
+</html>

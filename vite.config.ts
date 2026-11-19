@@ -5,6 +5,14 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig({
   base: './',
   plugins: [react(), tailwindcss()],
+  build: {
+    rollupOptions: {
+      input: {
+        main: 'index.html',
+        auth: 'auth.html',
+      },
+    },
+  },
   server: {
     port: 3000,
     host: true,
