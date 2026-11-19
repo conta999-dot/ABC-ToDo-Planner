@@ -210,6 +210,9 @@ const checkAndCreateNextDayCopy = (
     completedDate: '',
     reminderNotified: false,
     copiedFromId: sourceId,
+    // エクスポート記録は元タスクの予定を指すので、コピーには引き継がない
+    calendarExported: undefined,
+    calendarExports: undefined,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -806,7 +809,18 @@ export default function App() {
     setIsExporting(true);
     setExportSummary(null);
     try {
-      const r = await exportCompletedTasksToDeviceCalendar(tasks, calendarPrefix, target.id);
+      const outcome = await exportCompletedTasksToDeviceCalendar(tasks, calendarPrefix, target.id);
+      const r = outcome.summary;
+      // エクスポート記録（エクスポートフラグ・予定ID）をタスクに保存（Firestore で他の端末にも同期）
+      if (outcome.recordUpdates.size > 0) {
+        const stamp = new Date().toISOString();
+        const latest = getLocalTasks();
+        const base = latest.length > 0 ? latest : tasks;
+        updateTasksState(base.map((t) => {
+          const rec = outcome.recordUpdates.get(t.id);
+          return rec ? { ...t, calendarExported: true, calendarExports: rec, updatedAt: stamp } : t;
+        }));
+      }
       const summary = `新規登録 ${r.created} 件・更新 ${r.updated} 件・スキップ ${r.skipped} 件${r.failed ? `・失敗 ${r.failed} 件` : ''}`;
       setExportSummary(summary);
       if (r.failed) {
@@ -2354,7 +2368,7 @@ export default function App() {
               ) : (
               <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl flex flex-col gap-3">
                 <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
-                  完了したタスクだけを、この端末のカレンダーに時間指定なし（終日）の予定として登録します。Googleアカウントのカレンダーを選べば、Googleカレンダーの同期でクラウドにも反映されます。予定の日付は完了日（未入力なら実施予定日）、予定の詳細にはタスクの「メモ・詳細」が入ります。2回目以降は登録済みの予定を更新し、重複登録はしません。
+                  完了したタスクだけを、この端末のカレンダーに時間指定なし（終日）の予定として登録します。Googleアカウントのカレンダーを選べば、Googleカレンダーの同期でクラウドにも反映されます。予定の日付は完了日（未入力なら実施予定日）、予定の詳細にはタスクの「メモ・詳細」だけが入ります（カレンダーに余計な情報は書き込みません）。登録済みかどうかはアプリ側のタスクに記録するので、2回目以降は変わったタスクだけ更新し、重複登録はしません。
                 </p>
                 <div>
                   <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-300 mb-1" htmlFor="calendar-select">

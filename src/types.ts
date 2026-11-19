@@ -28,6 +28,18 @@ export interface Task {
   createdAt: string;             // ISO文字列
   updatedAt: string;             // ISO文字列
   copiedFromId?: string;         // 翌日コピー元タスクID
+  /** カレンダーへエクスポート済みか（どこかの端末で1回でも登録したら true） */
+  calendarExported?: boolean;
+  /** エクスポート記録。キーは `${deviceId}_${calendarId}`（端末・カレンダーごと） */
+  calendarExports?: Record<string, CalendarExportRecord>;
+}
+
+export interface CalendarExportRecord {
+  deviceId: string;     // アプリをインストールした端末ごとのID
+  calendarId: string;   // 端末内カレンダーのID
+  eventId: string;      // 端末内カレンダーの予定ID（_id）
+  exportedAt: string;   // ISO文字列
+  hash: string;         // 登録した内容（タイトル・日付・説明）のハッシュ。空なら次回必ず更新
 }
 
 export const getTaskQuadrant = (priorityLetter: PriorityLetter, priorityNumber: number | null): TaskQuadrant => {

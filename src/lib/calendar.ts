@@ -1,6 +1,6 @@
 import { Capacitor, registerPlugin } from '@capacitor/core';
 import type { PermissionState } from '@capacitor/core';
-import { Task } from '../types';
+import { Task, CalendarExportRecord } from '../types';
 import { errorDetail } from './nativeGoogleAuth';
 
 /**
@@ -27,6 +27,13 @@ export interface UpsertResult {
   errors: string[];
 }
 
+interface UpsertItemResult {
+  taskId: string;
+  status: 'created' | 'updated' | 'skipped' | 'failed';
+  eventId?: string;
+  error?: string;
+}
+
 interface DeviceCalendarPlugin {
   checkPermissions(): Promise<{ calendar: PermissionState }>;
   requestPermissions(): Promise<{ calendar: PermissionState }>;
@@ -34,8 +41,9 @@ interface DeviceCalendarPlugin {
   listCalendars(): Promise<{ calendars: DeviceCalendarInfo[] }>;
   upsertEvents(options: {
     calendarId: string;
-    events: { taskId: string; title: string; description: string; date: string }[];
-  }): Promise<UpsertResult>;
+    events: { taskId: string; title: string; description: string; date: string; eventId?: string; changed: boolean }[];
+  }): Promise<{ results: UpsertItemResult[] }>;
+  cleanLegacyMarkers(options: { calendarId: string }): Promise<{ adopted: { taskId: string; eventId: string }[] }>;
 }
 
 const DeviceCalendar = registerPlugin<DeviceCalendarPlugin>('DeviceCalendar');
@@ -122,17 +130,119 @@ export const pickDefaultCalendar = (calendars: DeviceCalendarInfo[], email?: str
   return calendars.find((c) => isGoogle(c) && c.isPrimary) || calendars.find((c) => c.isPrimary) || calendars[0];
 };
 
-/** 完了タスクを選択カレンダーへ登録・更新 */
-export const exportCompletedTasksToDeviceCalendar = async (tasks: Task[], prefix: string, calendarId: string): Promise<UpsertResult> => {
-  const events = exportableTasks(tasks).map((task) => ({
-    taskId: task.id,
-    title: buildEventTitle(task, prefix),
-    description: (task.notes || '').trim(),
-    date: eventDateOf(task),
-  }));
+/** この端末（インストール）ごとのID。アプリを入れ直すと変わる */
+const DEVICE_ID_STORAGE_KEY = 'abc_device_id';
+export const getDeviceId = (): string => {
   try {
-    return await DeviceCalendar.upsertEvents({ calendarId, events });
+    let id = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (!id) {
+      id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `dev-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      localStorage.setItem(DEVICE_ID_STORAGE_KEY, id);
+    }
+    return id;
+  } catch {
+    return 'unknown-device';
+  }
+};
+
+export const exportRecordKey = (deviceId: string, calendarId: string) => `${deviceId}_${calendarId}`;
+
+/** 登録内容のハッシュ（FNV-1a 32bit）。内容が変わったかの判定だけに使う */
+const contentHash = (title: string, date: string, description: string): string => {
+  const str = `${title}\u0000${date}\u0000${description}`;
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+};
+
+export interface ExportOutcome {
+  summary: UpsertResult;
+  /** エクスポート記録を書き込んだタスク（taskId → 更新後のエクスポート記録一式） */
+  recordUpdates: Map<string, Record<string, CalendarExportRecord>>;
+  /** v0.5.1 の目印を消した予定の数 */
+  cleanedLegacy: number;
+}
+
+/**
+ * 完了タスクを選択カレンダーへ登録・更新する。予定には目印を入れない。
+ * どのタスクをどの予定に書いたかは、タスクの calendarExports（端末ID＋カレンダーIDごと）に保存する。
+ * - 記録なし → 新規登録して記録
+ * - 記録あり → 予定ID（_id）で予定を探す。内容のハッシュが違えば更新、同じならスキップ
+ * - 記録はあるが予定が消えていた（カレンダーで削除） → 新規登録して記録を更新
+ * - 他の端末・他のカレンダーの記録しかない → この端末・このカレンダーでは未登録として新規登録
+ */
+export const exportCompletedTasksToDeviceCalendar = async (tasks: Task[], prefix: string, calendarId: string): Promise<ExportOutcome> => {
+  const deviceId = getDeviceId();
+  const key = exportRecordKey(deviceId, calendarId);
+  const now = new Date().toISOString();
+  const recordUpdates = new Map<string, Record<string, CalendarExportRecord>>();
+
+  // 1) v0.5.1 で説明欄に入れた目印を取り除き、その予定を記録に引き継ぐ（重複登録を防ぐ）
+  const legacy = new Map<string, string>();
+  let cleanedLegacy = 0;
+  try {
+    const { adopted } = await DeviceCalendar.cleanLegacyMarkers({ calendarId });
+    cleanedLegacy = adopted.length;
+    adopted.forEach((a) => {
+      if (!legacy.has(a.taskId)) legacy.set(a.taskId, a.eventId);
+    });
+  } catch (error) {
+    if ((error as { code?: string } | null)?.code === 'PERMISSION_DENIED') throw toCalendarError(error, '書き込み');
+    console.warn('古い目印の後片付けに失敗しました（エクスポートは続行）:', error);
+  }
+
+  // 2) 登録・更新
+  const targets = exportableTasks(tasks);
+  const prepared = targets.map((task) => {
+    const title = buildEventTitle(task, prefix);
+    const description = (task.notes || '').trim();
+    const date = eventDateOf(task);
+    const hash = contentHash(title, date, description);
+    const rec = task.calendarExports?.[key];
+    const eventId = rec?.eventId || legacy.get(task.id) || '';
+    // 引き継いだ予定は説明欄を書き直したので、必ず更新して内容を揃える
+    const changed = !rec || rec.hash !== hash;
+    return { task, title, description, date, hash, eventId, changed };
+  });
+
+  let results: UpsertItemResult[];
+  try {
+    ({ results } = await DeviceCalendar.upsertEvents({
+      calendarId,
+      events: prepared.map((p) => ({
+        taskId: p.task.id,
+        title: p.title,
+        description: p.description,
+        date: p.date,
+        eventId: p.eventId || undefined,
+        changed: p.changed,
+      })),
+    }));
   } catch (error) {
     throw toCalendarError(error, '書き込み');
   }
+
+  const summary: UpsertResult = { created: 0, updated: 0, skipped: 0, failed: 0, errors: [] };
+  const byTask = new Map(prepared.map((p) => [p.task.id, p]));
+  for (const r of results) {
+    const p = byTask.get(r.taskId);
+    if (r.status === 'failed' || !p || !r.eventId) {
+      summary.failed += 1;
+      summary.errors.push(`${p?.task.title || r.taskId}: ${r.error || 'unknown'}`);
+      continue;
+    }
+    summary[r.status] += 1;
+    const prev = p.task.calendarExports?.[key];
+    if (r.status === 'skipped' && prev && prev.eventId === r.eventId) continue; // 記録の書き換え不要
+    recordUpdates.set(p.task.id, {
+      ...(p.task.calendarExports || {}),
+      [key]: { deviceId, calendarId, eventId: r.eventId, exportedAt: now, hash: p.hash },
+    });
+  }
+  return { summary, recordUpdates, cleanedLegacy };
 };
