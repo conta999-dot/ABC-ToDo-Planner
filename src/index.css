@@ -43,7 +43,7 @@ html.is-web { font-size: 112.5%; }
   padding-bottom: calc(0.75rem + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)));
 }
 @media (min-width: 640px) {
-  .app-bottom { padding-bottom: 3rem; }
+  .app-bottom { padding-bottom: 0.75rem; }
 }
 
 /* Custom scrollbars and transition tweaks */
@@ -62,4 +62,25 @@ html.is-web { font-size: 112.5%; }
   ::-webkit-scrollbar-thumb:hover {
     background: rgba(156, 163, 175, 0.5);
   }
+}
+
+/* v0.6.0: 小さなプルダウン（行内の 達成状況・重要度・緊急度）。▼ をつけて押せることを分かりやすく */
+.mini-select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-left: 0.35rem;
+  padding-right: 0.95rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='3'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.2rem center;
+  background-size: 0.6rem;
+  text-overflow: ellipsis;
+}
+.mini-select:focus { outline: 2px solid rgb(14 165 233 / 0.6); outline-offset: 1px; }
+
+/* ドラッグ中は文字選択やスクロールの引っかかりを防ぐ */
+body.task-dragging, body.task-dragging * {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  cursor: grabbing !important;
 }

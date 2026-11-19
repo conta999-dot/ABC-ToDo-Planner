@@ -4,7 +4,6 @@ import {
   Plus,
   Moon,
   Sun,
-  Clock,
   ChevronLeft,
   ChevronRight,
   ChevronDown,
@@ -28,7 +27,7 @@ import { Capacitor, SystemBars, SystemBarsStyle } from '@capacitor/core';
 import { Network } from '@capacitor/network';
 import { App as CapApp } from '@capacitor/app';
 
-import { Task, PriorityLetter, TaskQuadrant, TaskStatus, getTaskQuadrant, getStatusSymbol } from './types';
+import { Task, PriorityLetter, TaskQuadrant, TaskStatus, getTaskQuadrant } from './types';
 import { getLocalTasks, saveLocalTasks } from './lib/db';
 import { startReminderScheduler, stopReminderScheduler, requestNotificationPermission, rescheduleNativeReminders } from './lib/reminder';
 import { getLocalDateString, addDays, newTaskId, parseLocalDate } from './lib/dates';
@@ -56,16 +55,80 @@ import { mergeTasks } from './lib/drive';
 // Supporting Components (Inlined or imported cleanly)
 import BackupButton from './components/BackupButton';
 import TaskForm from './components/TaskForm';
+import {
+  TaskRow,
+  TaskRowHeader,
+  TaskRowHandlers,
+  SortToggle,
+  SortDir,
+  StatusFilterSelect,
+  DragGhost,
+  compareTasks,
+  matchesStatusFilter,
+} from './components/TaskRow';
+import { useTaskDrag, DropTarget } from './lib/useTaskDrag';
+import { priorityForQuadrant, QUADRANT_DROP_RULE } from './lib/quadrantMove';
 
-// Helper to format YYYY-MM-DD to MM/DD
-const formatDueDate = (dateStr: string) => {
-  if (!dateStr) return '';
-  const parts = dateStr.split('-');
-  if (parts.length === 3) {
-    return `${parts[1]}/${parts[2]}`;
-  }
-  return dateStr;
+/** 画面幅の判定（レイアウト切り替え用） */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState<boolean>(() => typeof window !== 'undefined' && window.matchMedia(query).matches);
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    const onChange = () => setMatches(mql.matches);
+    onChange();
+    mql.addEventListener('change', onChange);
+    return () => mql.removeEventListener('change', onChange);
+  }, [query]);
+  return matches;
+}
+
+/** 4つの領域の表示設定 */
+const QUADRANT_CONFIGS: { id: TaskQuadrant; label: string; desc: string; sub: string; drop: string; color: string }[] = [
+  {
+    id: 'I',
+    label: '第Ⅰ領域（必須）',
+    desc: '重要 かつ 緊急',
+    sub: '締め切り、突発的な問題、危機対応など。最優先で実施すべき必須事項。',
+    drop: QUADRANT_DROP_RULE.I,
+    color: 'border-red-200 dark:border-red-950/60 bg-red-500/5 text-red-700 dark:text-red-400 ring-red-500/50',
+  },
+  {
+    id: 'II',
+    label: '第Ⅱ領域（自己）',
+    desc: '重要 かつ 緊急ではない',
+    sub: '自己啓発、計画準備、健康維持、良好な人間関係など。人生の質を高める最も重要な領域。',
+    drop: QUADRANT_DROP_RULE.II,
+    color: 'border-emerald-200 dark:border-emerald-950/60 bg-emerald-500/5 text-emerald-700 dark:text-emerald-400 ring-emerald-500/50',
+  },
+  {
+    id: 'III',
+    label: '第Ⅲ領域（錯覚）',
+    desc: '重要ではない かつ 緊急',
+    sub: '無駄な会議や電話、突然の用事、他者からの依頼など。緊急だが重要ではない事柄。',
+    drop: QUADRANT_DROP_RULE.III,
+    color: 'border-amber-200 dark:border-amber-950/60 bg-amber-500/5 text-amber-700 dark:text-amber-400 ring-amber-500/50',
+  },
+  {
+    id: 'IV',
+    label: '第Ⅳ領域（無駄）',
+    desc: '重要ではない かつ 緊急ではない',
+    sub: '時間潰し、過度の娯楽、単なる逃避行動など。成果を生まない、または削減すべき無駄。',
+    drop: QUADRANT_DROP_RULE.IV,
+    color: 'border-zinc-200 dark:border-zinc-800 bg-zinc-500/5 text-zinc-600 dark:text-zinc-400 ring-zinc-500/50',
+  },
+];
+
+const WEEKDAY_JP = ['日', '月', '火', '水', '木', '金', '土'];
+/** 週の範囲表示: 11/20(金) */
+const fmtRangeDate = (d: string) => {
+  if (!d) return '';
+  const dt = parseLocalDate(d);
+  return `${dt.getMonth() + 1}/${dt.getDate()}(${WEEKDAY_JP[dt.getDay()]})`;
 };
+
+/** 初期表示タブ: Android アプリは「一覧」、Web は「デイリー」 */
+const INITIAL_VIEW: 'list' | 'daily' = Capacitor.isNativePlatform() ? 'list' : 'daily';
+
 
 // Automatically extract due date from text and return a clean title with extracted date
 const parseDueDateFromText = (text: string): { dueDate: string | null; cleanedText: string } => {
@@ -311,10 +374,10 @@ function HeaderStatus({
 export default function App() {
   // --- States ---
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [currentView, setCurrentView] = useState<'list' | 'matrix' | 'detail' | 'daily' | 'settings'>('list');
+  const [currentView, setCurrentView] = useState<'list' | 'matrix' | 'detail' | 'daily' | 'settings'>(INITIAL_VIEW);
   const [selectedDate, setSelectedDate] = useState<string>('');
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
-  const [prevView, setPrevView] = useState<'list' | 'matrix' | 'detail' | 'daily' | 'settings'>('list');
+  const [prevView, setPrevView] = useState<'list' | 'matrix' | 'detail' | 'daily' | 'settings'>(INITIAL_VIEW);
   
   // Quick registration inputs
   const [quickTitle, setQuickTitle] = useState('');
@@ -329,7 +392,20 @@ export default function App() {
   // UI preferences
   const [darkMode, setDarkMode] = useState(false);
   const [notificationsGranted, setNotificationsGranted] = useState(false);
-  const [quadrantPopup, setQuadrantPopup] = useState<{ id: TaskQuadrant; label: string; desc: string; sub: string } | null>(null);
+  const [quadrantPopup, setQuadrantPopup] = useState<(typeof QUADRANT_CONFIGS)[number] | null>(null);
+  const [showDailyHelp, setShowDailyHelp] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = (msg: string) => {
+    setToast(msg);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(null), 2600);
+  };
+  // 期日の並べ替え（全タブ共通）。起動時は毎回「期日の降順・同じ日は重要度・緊急度の昇順」
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+  const toggleSortDir = () => setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+  const isWide = useMediaQuery('(min-width: 768px)');
+  const isXL = useMediaQuery('(min-width: 1280px)');
 
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator === 'undefined' ? true : navigator.onLine);
@@ -374,11 +450,6 @@ export default function App() {
   const authUserRef = useRef<User | null>(null);
   const applyingRemoteRef = useRef(false);
 
-  // Inline editing states for task list
-  const [inlineEditingTaskId, setInlineEditingTaskId] = useState<string | null>(null);
-  const [inlineEditingField, setInlineEditingField] = useState<'status' | 'priority' | 'title' | null>(null);
-  const [inlineEditingTitleValue, setInlineEditingTitleValue] = useState<string>('');
-
   // Swipe navigation states
   const touchStartX = useRef<number | null>(null);
   const touchStartY = useRef<number | null>(null);
@@ -390,6 +461,12 @@ export default function App() {
 
   const handleTouchEnd = (e: React.TouchEvent) => {
     if (touchStartX.current === null || touchStartY.current === null) return;
+    if (drag.isDragBusy()) {
+      // タスクのドラッグ中はタブ切り替えのスワイプにしない
+      touchStartX.current = null;
+      touchStartY.current = null;
+      return;
+    }
     const diffX = e.changedTouches[0].clientX - touchStartX.current;
     const diffY = e.changedTouches[0].clientY - touchStartY.current;
 
@@ -419,28 +496,6 @@ export default function App() {
 
     touchStartX.current = null;
     touchStartY.current = null;
-  };
-
-  // Long press refs for task rows to transition to detail/edit view
-  const longPressTimeoutRef = useRef<any>(null);
-  const longPressActiveRef = useRef<boolean>(false);
-
-  const startLongPress = (taskId: string) => {
-    longPressActiveRef.current = false;
-    if (longPressTimeoutRef.current) {
-      clearTimeout(longPressTimeoutRef.current);
-    }
-    longPressTimeoutRef.current = setTimeout(() => {
-      longPressActiveRef.current = true;
-      handleSelectTaskForDetail(taskId);
-    }, 600); // 600ms threshold for long press
-  };
-
-  const cancelLongPress = () => {
-    if (longPressTimeoutRef.current) {
-      clearTimeout(longPressTimeoutRef.current);
-      longPressTimeoutRef.current = null;
-    }
   };
 
   useEffect(() => {
@@ -1071,72 +1126,82 @@ export default function App() {
     setSelectedDate(addDays(selectedDate || getLocalDateString(), offsetWeeks * 7));
   };
 
-  // --- Helper to render status cell info ---
-  const getStatusBadgeInfo = (status: TaskStatus) => {
-    const symbol = getStatusSymbol(status);
-    switch (status) {
-      case 'completed':
-        return { symbol, label: '完了', bg: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20' };
-      case 'postponed':
-        return { symbol, label: '先送り', bg: 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/20' };
-      case 'delegated':
-        return { symbol, label: '委任', bg: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20' };
-      case 'in_progress':
-        return { symbol, label: '進行中', bg: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20' };
-      case 'deleted':
-        return { symbol, label: '削除', bg: 'bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/20 line-through' };
-      default:
-        return { symbol: '', label: '未達成', bg: 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 border-zinc-200 dark:border-zinc-700' };
-    }
+  // --- v0.6.0: 行内編集（日付・重要度/緊急度）とドラッグ＆ドロップ ---
+  const handleSetDueDate = (taskId: string, date: string) => {
+    if (!date) return;
+    const target = tasks.find((t) => t.id === taskId);
+    if (!target || target.dueDate === date) return;
+    const now = new Date().toISOString();
+    updateTasksState(tasks.map((t) => (t.id === taskId ? { ...t, dueDate: date, reminderNotified: false, updatedAt: now } : t)));
   };
 
+  const handleSetPriority = (taskId: string, letter: PriorityLetter, number: number | null, changed: 'letter' | 'number') => {
+    const target = tasks.find((t) => t.id === taskId);
+    if (!target) return;
+    let num = number;
+    // 重要度だけ選んで緊急度が空なら、その重要度の次の番号を自動で付ける（簡易登録と同じ）
+    if (changed === 'letter' && letter && num === null) num = getNextPriorityNumber(letter);
+    if (target.priorityLetter === letter && target.priorityNumber === num) return;
+    const now = new Date().toISOString();
+    updateTasksState(tasks.map((t) => (
+      t.id === taskId ? { ...t, priorityLetter: letter, priorityNumber: num, quadrant: getTaskQuadrant(letter, num), updatedAt: now } : t
+    )));
+  };
+
+  const handleMoveToQuadrant = (taskId: string, quadrant: TaskQuadrant) => {
+    const target = tasks.find((t) => t.id === taskId);
+    if (!target) return;
+    const next = priorityForQuadrant(target, quadrant, tasks);
+    if (!next) return;
+    const now = new Date().toISOString();
+    updateTasksState(tasks.map((t) => (
+      t.id === taskId
+        ? { ...t, priorityLetter: next.letter, priorityNumber: next.number, quadrant: getTaskQuadrant(next.letter, next.number), updatedAt: now }
+        : t
+    )));
+    const label = QUADRANT_CONFIGS.find((q) => q.id === quadrant)?.label || '';
+    const prLabel = next.letter ? `${next.letter}${next.number ?? ''}` : next.number !== null ? `重要度なし・緊急度${next.number}` : '重要度・緊急度なし';
+    showToast(`「${target.title}」を ${prLabel}（${label}）に変更しました`);
+  };
+
+  const drag = useTaskDrag((taskId: string, dropTarget: DropTarget) => {
+    if (dropTarget.kind === 'date') {
+      const t = tasks.find((x) => x.id === taskId);
+      if (t && t.dueDate !== dropTarget.value) {
+        handleSetDueDate(taskId, dropTarget.value);
+        showToast(`「${t.title}」を ${fmtRangeDate(dropTarget.value)} に移動しました`);
+      }
+    } else {
+      handleMoveToQuadrant(taskId, dropTarget.value as TaskQuadrant);
+    }
+  });
+
+  const rowHandlers: TaskRowHandlers = {
+    onStatus: (taskId, status) => handleUpdateTaskFieldDirect(taskId, 'status', status),
+    onPriority: handleSetPriority,
+    onDate: handleSetDueDate,
+    onOpen: handleSelectTaskForDetail,
+  };
+
+  // 並べ替えは毎回の表示時に行うので、追加・編集したタスクも常に正しい位置に表示される
+  const sortTaskList = (list: Task[]) => [...list].sort((a, b) => compareTasks(a, b, sortDir));
+
+  // 達成状況の絞り込み（全タブ共通）
+  const statusFilteredTasks = tasks.filter((t) => matchesStatusFilter(t, statusFilter));
+
   // --- Filter Tasks for Main List View ---
-  const mainFilteredTasks = tasks.filter((task) => {
-    // Quadrant filter
+  const mainFilteredTasks = statusFilteredTasks.filter((task) => {
     const q = getTaskQuadrant(task.priorityLetter, task.priorityNumber);
     if (selectedQuadrant && q !== selectedQuadrant) return false;
-
-    // Search query filter
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase();
       const matchTitle = task.title.toLowerCase().includes(query);
       const matchNotes = task.notes?.toLowerCase().includes(query) || false;
       if (!matchTitle && !matchNotes) return false;
     }
-
-    // Status filter
-    if (statusFilter === 'all_active') {
-      return task.status !== 'deleted';
-    } else if (statusFilter === 'pending_or_progress') {
-      return task.status === 'pending' || task.status === 'in_progress';
-    } else if (statusFilter === 'all') {
-      return true;
-    } else {
-      return task.status === statusFilter;
-    }
+    return true;
   });
-
-  // Sort: Due Date (ascending, empty at bottom), then Priority Letter (A>B>C>none), Number (1>2>3>none), then Title
-  const sortedTasks = [...mainFilteredTasks].sort((a, b) => {
-    // 1. Due Date sorting (ascending, empty/invalid at bottom)
-    const dateA = a.dueDate || '9999-12-31';
-    const dateB = b.dueDate || '9999-12-31';
-    if (dateA !== dateB) return dateA.localeCompare(dateB);
-
-    // 2. Priority Letter sorting
-    const letterWeight = { A: 10, B: 5, C: 2, '': 0 };
-    const weightA = letterWeight[a.priorityLetter || ''] || 0;
-    const weightB = letterWeight[b.priorityLetter || ''] || 0;
-    if (weightA !== weightB) return weightB - weightA;
-
-    // 3. Priority Number sorting
-    const numA = a.priorityNumber === null ? 999 : a.priorityNumber;
-    const numB = b.priorityNumber === null ? 999 : b.priorityNumber;
-    if (numA !== numB) return numA - numB;
-
-    // 4. Title sorting (ascending)
-    return (a.title || '').localeCompare(b.title || '');
-  });
+  const sortedTasks = sortTaskList(mainFilteredTasks);
 
   // Calculate day-of-week string in Japanese
   const getJPDayOfWeek = (dateStr: string) => {
@@ -1149,14 +1214,14 @@ export default function App() {
   const todayStr = getLocalDateString();
 
   return (
-    <div className="app-shell h-[100dvh] sm:h-auto sm:min-h-screen overflow-hidden sm:overflow-visible flex flex-col bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-200" id="matrix-app-container">
+    <div className="app-shell h-[100dvh] overflow-hidden flex flex-col bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-200" id="matrix-app-container">
       
       {/* Premium Top Line Accent */}
       <div className="h-1 bg-gradient-to-r from-emerald-500 via-zinc-800 to-amber-500 dark:from-emerald-400 dark:via-zinc-100 dark:to-amber-400" />
 
       {/* Header Bar */}
       <header className="border-b border-zinc-200/60 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md sticky top-0 z-30 flex-none" id="global-header">
-        <div className="max-w-6xl mx-auto px-3 sm:px-4 py-2 sm:py-3">
+        <div className="w-full px-3 sm:px-4 lg:px-6 py-2">
           <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <img src="./icon-192.png" alt="" className="w-9 h-9 rounded-xl shadow-sm flex-none max-[379px]:hidden" />
             <div className="min-w-0 flex-1">
@@ -1279,26 +1344,21 @@ export default function App() {
       <main 
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
-        className="w-full min-w-0 max-w-6xl mx-auto px-3 sm:px-4 py-4 sm:py-6 flex-1 min-h-0 overflow-y-auto sm:overflow-visible" 
+        className="w-full min-w-0 px-2 sm:px-4 lg:px-6 py-2 sm:py-3 flex-1 min-h-0 overflow-y-auto overscroll-contain flex flex-col" 
         id="view-panel-viewport"
       >
         
         {/* VIEW 1: 一覧画面 */}
         {currentView === 'list' && (
-          <div className="flex flex-col gap-6 animate-fade-in" id="view-list-container">
-            
-            {/* List & Filtering Table section */}
-            <section className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl p-3.5 sm:p-5 shadow-xs" id="main-list-table-panel">
-              
-              {/* Filter controls */}
-              <div className="flex flex-row items-center justify-between gap-2 border-b border-zinc-100 dark:border-zinc-800 pb-2 mb-2">
-                
+          <div className="flex flex-col gap-3 animate-fade-in md:flex-1 md:min-h-0" id="view-list-container">
+            <section className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl p-3 sm:p-4 shadow-xs flex flex-col md:flex-1 md:min-h-0" id="main-list-table-panel">
+              <div className="flex flex-row flex-wrap items-center justify-between gap-2 pb-2 mb-2 border-b border-zinc-100 dark:border-zinc-800">
                 <div className="flex items-center gap-1.5 min-w-0">
                   <h3 className="text-xs font-black tracking-wider uppercase text-zinc-400 dark:text-zinc-500 truncate">
                     <span className="sm:hidden">タスク</span>
                     <span className="hidden sm:inline">タスクプラン一覧</span>
                   </h3>
-                  <span className="text-[0.8125rem] font-bold px-1.5 py-0.5 bg-zinc-100 dark:bg-zinc-850 rounded-full text-zinc-500">
+                  <span className="text-[0.8125rem] font-bold px-1.5 py-0.5 bg-zinc-100 dark:bg-zinc-800 rounded-full text-zinc-500" id="list-count">
                     {sortedTasks.length}
                   </span>
                   {selectedQuadrant && (
@@ -1310,930 +1370,355 @@ export default function App() {
                     </button>
                   )}
                 </div>
-
                 <div className="flex items-center gap-1.5 min-w-0">
-                  
-                  {/* Text search */}
                   <input
                     type="text"
                     placeholder="キーワード検索..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="hidden md:inline-block px-2.5 py-1 text-[0.875rem] font-medium bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg focus:outline-none w-28 sm:w-36 text-zinc-800 dark:text-zinc-200"
+                    className="hidden md:inline-block px-2.5 h-8 text-[0.875rem] font-medium bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg focus:outline-none w-40 lg:w-56 text-zinc-800 dark:text-zinc-200"
                   />
-
-                  {/* Status Dropdown Filter */}
-                  <select
-                    value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value)}
-                    className="min-w-0 max-w-[10.5rem] sm:max-w-none px-2 py-1 text-[0.875rem] font-semibold bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg focus:outline-none text-zinc-700 dark:text-zinc-300 h-8 truncate"
-                  >
-                    <option value="all_active">すべてのタスク (削除除く)</option>
-                    <option value="pending_or_progress">未達成・進行中</option>
-                    <option value="pending">未達成</option>
-                    <option value="in_progress">進行中</option>
-                    <option value="completed">完了</option>
-                    <option value="postponed">先送り</option>
-                    <option value="delegated">委任</option>
-                    <option value="deleted">削除</option>
-                    <option value="all">すべて (削除含む)</option>
-                  </select>
-
-                  {/* Create New Task Detail */}
+                  <StatusFilterSelect value={statusFilter} onChange={setStatusFilter} className="max-w-[9.5rem] sm:max-w-none" />
+                  {!isWide && <SortToggle dir={sortDir} onToggle={toggleSortDir} />}
                   <button
                     onClick={handleCreateNewTaskDetail}
-                    className="flex shrink-0 px-2.5 py-1 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 rounded-lg text-[0.875rem] font-bold hover:scale-102 transition-all items-center gap-1 shadow-xs h-8"
+                    className="flex shrink-0 px-2.5 h-8 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 rounded-lg text-[0.875rem] font-bold transition-all items-center gap-1 shadow-xs"
+                    title="詳細を入力して作成"
                   >
-                    <Plus className="w-3 h-3" />
-                    <span className="hidden xs:inline">詳細作成</span>
+                    <Plus className="w-3.5 h-3.5" />
+                    <span className="hidden sm:inline">詳細作成</span>
                   </button>
-
                 </div>
-
               </div>
 
-              {/* Task table list */}
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-zinc-50/50 dark:bg-zinc-800/10 border-b border-zinc-200/50 dark:border-zinc-850 text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 tracking-wider">
-                      <th className="w-12 sm:w-24 py-2 px-1 sm:px-3 text-center">
-                        <span className="hidden sm:inline">達成状況</span>
-                        <span className="sm:hidden block leading-tight text-[0.75rem]">達成<br/>状況</span>
-                      </th>
-                      <th className="w-10 sm:w-16 py-2 px-1 sm:px-2 text-center">
-                        <span className="hidden sm:inline">優先度</span>
-                        <span className="sm:hidden block leading-tight text-[0.75rem]">優先<br/>度</span>
-                      </th>
-                      <th className="py-2 px-2 sm:px-3">タスク内容</th>
-                      <th className="w-16 sm:w-28 py-2 px-1 sm:px-3 text-center">期日</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800/60">
-                    {sortedTasks.length === 0 ? (
-                      <tr>
-                        <td colSpan={4} className="py-12 text-center text-xs text-zinc-400 dark:text-zinc-500">
-                          <Inbox className="w-8 h-8 text-zinc-300 dark:text-zinc-700 mx-auto mb-2" />
-                          表示するタスクがありません。予定を追加するか、フィルターを変更してください。
-                        </td>
-                      </tr>
-                    ) : (
-                      sortedTasks.map((task) => {
-                        const statusBadge = getStatusBadgeInfo(task.status || 'pending');
-                        const isCompleted = task.status === 'completed';
-                        const isDeleted = task.status === 'deleted';
-
-                        return (
-                          <tr
-                            key={task.id}
-                            className={`group hover:bg-zinc-50/60 dark:hover:bg-zinc-800/25 cursor-pointer select-none transition-colors ${
-                              isCompleted ? 'opacity-60' : ''
-                            } ${isDeleted ? 'bg-red-500/5 opacity-50' : ''}`}
-                            onClick={(e) => {
-                              if (longPressActiveRef.current) {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  longPressActiveRef.current = false;
-                                }
-                            }}
-                            onMouseDown={(e) => {
-                              if (e.button === 0) {
-                                startLongPress(task.id);
-                              }
-                            }}
-                            onMouseUp={cancelLongPress}
-                            onMouseLeave={cancelLongPress}
-                            onTouchStart={() => startLongPress(task.id)}
-                            onTouchEnd={cancelLongPress}
-                            onTouchCancel={cancelLongPress}
-                            id={`task-list-row-${task.id}`}
-                            title="長押しで詳細・編集を開く"
-                          >
-                            {/* Status symbol column with button cycling (Requested core interaction) */}
-                            <td className="py-2 px-1 sm:px-3 text-center" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
-                              {inlineEditingTaskId === task.id && inlineEditingField === 'status' ? (
-                                <select
-                                  value={task.status || 'pending'}
-                                  onChange={(e) => {
-                                    handleUpdateTaskFieldDirect(task.id, 'status', e.target.value as TaskStatus);
-                                    setInlineEditingTaskId(null);
-                                    setInlineEditingField(null);
-                                  }}
-                                  onBlur={() => {
-                                    setInlineEditingTaskId(null);
-                                    setInlineEditingField(null);
-                                  }}
-                                  autoFocus
-                                  className="px-1 py-0.5 text-xs bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg focus:outline-none font-bold text-zinc-800 dark:text-zinc-100 shadow-sm"
-                                >
-                                  <option value="pending">未達成</option>
-                                  <option value="in_progress">進行中 (・)</option>
-                                  <option value="completed">完了 (✓)</option>
-                                  <option value="postponed">先送り (→)</option>
-                                  <option value="delegated">委任 (○)</option>
-                                  <option value="deleted">削除 (×)</option>
-                                </select>
-                              ) : (
-                                <button
-                                  onClick={() => {
-                                    setInlineEditingTaskId(task.id);
-                                    setInlineEditingField('status');
-                                  }}
-                                  className={`inline-flex items-center justify-center w-7 h-7 rounded-lg border text-xs font-black transition-all hover:scale-105 active:scale-95 ${statusBadge.bg}`}
-                                  title="達成状況を変更"
-                                  id={`cycle-btn-${task.id}`}
-                                >
-                                  {statusBadge.symbol || (
-                                    <div className="w-3.5 h-3.5 rounded-full border border-zinc-300 dark:border-zinc-700 hover:border-zinc-400" />
-                                  )}
-                                </button>
-                              )}
-                            </td>
-
-                            {/* Priority Letter/Number Badge with inline selector */}
-                            <td 
-                              className="py-2 px-1 sm:px-2 text-center font-bold text-xs"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setInlineEditingTaskId(task.id);
-                                setInlineEditingField('priority');
-                              }}
-                            >
-                              {inlineEditingTaskId === task.id && inlineEditingField === 'priority' ? (
-                                <select
-                                  value={task.priorityLetter ? `${task.priorityLetter}${task.priorityNumber || ''}` : ''}
-                                  onChange={(e) => {
-                                    handleUpdateTaskFieldDirect(task.id, 'priority', e.target.value);
-                                    setInlineEditingTaskId(null);
-                                    setInlineEditingField(null);
-                                  }}
-                                  onBlur={() => {
-                                    setInlineEditingTaskId(null);
-                                    setInlineEditingField(null);
-                                  }}
-                                  onClick={(e) => e.stopPropagation()}
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                  onTouchStart={(e) => e.stopPropagation()}
-                                  autoFocus
-                                  className="px-1 py-0.5 text-xs bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg focus:outline-none max-w-[85px] font-black text-zinc-900 dark:text-zinc-100 shadow-sm"
-                                >
-                                  <option value="">なし</option>
-                                  <optgroup label="A (最重要)">
-                                    {Array.from({ length: 10 }, (_, i) => `A${i+1}`).map((opt) => (
-                                      <option key={opt} value={opt}>{opt}</option>
-                                    ))}
-                                  </optgroup>
-                                  <optgroup label="B (重要)">
-                                    {Array.from({ length: 10 }, (_, i) => `B${i+1}`).map((opt) => (
-                                      <option key={opt} value={opt}>{opt}</option>
-                                    ))}
-                                  </optgroup>
-                                  <optgroup label="C (重要ではない)">
-                                    {Array.from({ length: 10 }, (_, i) => `C${i+1}`).map((opt) => (
-                                      <option key={opt} value={opt}>{opt}</option>
-                                    ))}
-                                  </optgroup>
-                                </select>
-                              ) : (
-                                <span className="cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 p-1 rounded-lg transition-all" title="優先度を変更">
-                                  {task.priorityLetter ? (
-                                    <span className={`inline-block px-1.5 py-0.5 rounded text-[0.8125rem] font-black tracking-wide ${
-                                      task.priorityLetter === 'A'
-                                        ? 'bg-red-500 text-white'
-                                        : task.priorityLetter === 'B'
-                                        ? 'bg-emerald-500 text-white'
-                                        : 'bg-zinc-500 text-white'
-                                    }`}>
-                                      {task.priorityLetter}{task.priorityNumber || ''}
-                                    </span>
-                                  ) : (
-                                    <span className="text-zinc-300 dark:text-zinc-700 px-1">-</span>
-                                  )}
-                                </span>
-                              )}
-                            </td>
-
-                            {/* Title & Memo snippet with inline editor */}
-                            <td 
-                              className="py-2 px-2 sm:px-3 text-xs cursor-pointer hover:bg-zinc-50/80 dark:hover:bg-zinc-800/15 transition-colors"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setInlineEditingTaskId(task.id);
-                                setInlineEditingField('title');
-                                setInlineEditingTitleValue(task.title);
-                              }}
-                            >
-                              {inlineEditingTaskId === task.id && inlineEditingField === 'title' ? (
-                                <div className="flex items-center gap-1.5 w-full" onClick={(e) => e.stopPropagation()}>
-                                  <input
-                                    type="text"
-                                    value={inlineEditingTitleValue}
-                                    onChange={(e) => setInlineEditingTitleValue(e.target.value)}
-                                    onKeyDown={(e) => {
-                                      if (e.key === 'Enter') {
-                                        handleUpdateTaskFieldDirect(task.id, 'title', inlineEditingTitleValue);
-                                        setInlineEditingTaskId(null);
-                                        setInlineEditingField(null);
-                                      } else if (e.key === 'Escape') {
-                                        setInlineEditingTaskId(null);
-                                        setInlineEditingField(null);
-                                      }
-                                    }}
-                                    onBlur={() => {
-                                      handleUpdateTaskFieldDirect(task.id, 'title', inlineEditingTitleValue);
-                                      setInlineEditingTaskId(null);
-                                      setInlineEditingField(null);
-                                    }}
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                    onTouchStart={(e) => e.stopPropagation()}
-                                    autoFocus
-                                    className="w-full px-2.5 py-1 text-xs bg-white dark:bg-zinc-850 border border-zinc-300 dark:border-zinc-700 rounded-lg focus:outline-none focus:ring-1 focus:ring-zinc-500 text-zinc-800 dark:text-zinc-100 font-semibold"
-                                  />
-                                </div>
-                              ) : (
-                                <div className="flex flex-col gap-0.5">
-                                  <span className={`font-semibold text-zinc-800 dark:text-zinc-200 hover:underline ${
-                                    isCompleted ? 'line-through text-zinc-400 dark:text-zinc-500' : ''
-                                  } ${isDeleted ? 'line-through text-red-500' : ''}`}>
-                                    {task.title}
-                                  </span>
-                                  {task.notes && (
-                                    <span className="text-[0.8125rem] text-zinc-400 dark:text-zinc-500 line-clamp-1 max-w-lg">
-                                      {task.notes}
-                                    </span>
-                                  )}
-                                  {task.reminderEnabled && task.reminderTime && (
-                                    <div className="flex items-center gap-1 text-[0.75rem] text-sky-500 font-bold mt-0.5">
-                                      <Clock className="w-2.5 h-2.5" />
-                                      <span>通知: {task.reminderTime}</span>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                            </td>
-
-                            {/* Due Date Column */}
-                            <td className="py-2 px-1 sm:px-3 text-center text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500">
-                              <span className={task.dueDate === todayStr ? 'text-zinc-900 dark:text-zinc-100 underline decoration-zinc-900 dark:decoration-zinc-100 decoration-2' : ''}>
-                                {task.dueDate === todayStr ? (
-                                  '今日'
-                                ) : (
-                                  <>
-                                    <span className="hidden sm:inline">{task.dueDate}</span>
-                                    <span className="sm:hidden inline">{formatDueDate(task.dueDate)}</span>
-                                  </>
-                                )}
-                              </span>
-                            </td>
-
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
+              {isWide && <TaskRowHeader sortDir={sortDir} onToggleSort={toggleSortDir} />}
+              <div className={`${isWide ? 'divide-y divide-zinc-100 dark:divide-zinc-800/60 md:flex-1 md:min-h-0 md:overflow-y-auto' : 'flex flex-col gap-1.5'}`} id="list-rows">
+                {sortedTasks.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-zinc-400 dark:text-zinc-500">
+                    <Inbox className="w-8 h-8 text-zinc-300 dark:text-zinc-700 mx-auto mb-2" />
+                    表示するタスクがありません。予定を追加するか、絞り込みを変更してください。
+                  </div>
+                ) : (
+                  sortedTasks.map((task) => (
+                    <TaskRow
+                      key={task.id}
+                      task={task}
+                      layout={isWide ? 'row' : 'stack'}
+                      todayStr={todayStr}
+                      handlers={rowHandlers}
+                      longDate={isWide}
+                    />
+                  ))
+                )}
               </div>
-
-              {/* Status symbols guide legend */}
-              <div className="mt-5 pt-3 border-t border-zinc-200/60 dark:border-zinc-800 flex flex-wrap gap-x-4 gap-y-1 text-[0.8125rem] text-zinc-400 dark:text-zinc-500 font-bold" id="status-legends">
-                <span>【達成状況 記号対応】</span>
-                <span>未達成 (空欄)</span>
-                <span className="text-emerald-500 dark:text-emerald-400">完了 (✓)</span>
-                <span className="text-sky-500 dark:text-sky-400">先送り (→)</span>
-                <span className="text-indigo-500 dark:text-indigo-400">委任 (○)</span>
-                <span className="text-amber-500 dark:text-amber-400">進行中 (・)</span>
-                <span className="text-red-500 dark:text-red-400">削除 (×)</span>
-              </div>
-
             </section>
-
           </div>
         )}
 
-        {/* VIEW: 4つの領域 (マトリクス) */}
+        {/* VIEW: 4つの領域 (マトリクス) — タスクを別の領域へドラッグすると優先度が変わる */}
         {currentView === 'matrix' && (
-          <div className="flex flex-col gap-6 animate-fade-in" id="view-matrix-container">
-            
-            {/* Header / Guide */}
-            <div className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl p-4 shadow-xs">
-              <h3 className="text-xs font-black tracking-wider uppercase text-zinc-400 dark:text-zinc-500">
-                時間管理マトリクス
-              </h3>
-              <p className="text-xs font-semibold text-zinc-600 dark:text-zinc-300 mt-0.5">
-                重要度と緊急度でタスクを4つの領域に分類。領域をクリックして絞り込み表示できます。
-              </p>
+          <div className="flex flex-col gap-3 animate-fade-in md:flex-1 md:min-h-0" id="view-matrix-container">
+            <div className="flex flex-wrap items-center justify-between gap-2 bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl px-3 py-2 sm:px-4 shadow-xs">
+              <div className="min-w-0">
+                <h3 className="text-xs font-black tracking-wider uppercase text-zinc-400 dark:text-zinc-500">時間管理マトリクス</h3>
+                <p className="text-[0.8125rem] font-semibold text-zinc-600 dark:text-zinc-300">
+                  タスクを別の領域へドラッグ＆ドロップすると、その領域になるよう重要度・緊急度が変わります{!isWide && '（長押ししてから動かす）'}
+                </p>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <StatusFilterSelect value={statusFilter} onChange={setStatusFilter} className="max-w-[11rem] sm:max-w-none" />
+                <SortToggle dir={sortDir} onToggle={toggleSortDir} />
+              </div>
             </div>
 
-            {/* Covey Quadrant Filter Grid (2x2) */}
-            <section className="grid grid-cols-2 gap-2 sm:gap-4" id="coovey-matrix-grid">
-              {[
-                { 
-                  id: 'I' as TaskQuadrant, 
-                  label: '第Ⅰ領域（必須）', 
-                  desc: '重要 かつ 緊急', 
-                  sub: '締め切り、突発的な問題、危機対応など。最優先で実施すべき必須事項。',
-                  count: tasks.filter(t => getTaskQuadrant(t.priorityLetter, t.priorityNumber) === 'I').length, 
-                  color: 'border-red-200 dark:border-red-950/40 bg-red-500/5 hover:bg-red-500/10 text-red-700 dark:text-red-400 ring-red-500/50' 
-                },
-                { 
-                  id: 'II' as TaskQuadrant, 
-                  label: '第Ⅱ領域（自己）', 
-                  desc: '重要 かつ 緊急ではない', 
-                  sub: '自己啓発、計画準備、健康維持、良好な人間関係など。人生の質を高める最も重要な領域。',
-                  count: tasks.filter(t => getTaskQuadrant(t.priorityLetter, t.priorityNumber) === 'II').length, 
-                  color: 'border-emerald-200 dark:border-emerald-950/40 bg-emerald-500/5 hover:bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 ring-emerald-500/50' 
-                },
-                { 
-                  id: 'III' as TaskQuadrant, 
-                  label: '第Ⅲ領域（錯覚）', 
-                  desc: '重要ではない かつ 緊急', 
-                  sub: '無駄な会議や電話、突然の用事、他者からの依頼など。緊急だが重要ではない事柄。',
-                  count: tasks.filter(t => getTaskQuadrant(t.priorityLetter, t.priorityNumber) === 'III').length, 
-                  color: 'border-amber-200 dark:border-amber-950/40 bg-amber-500/5 hover:bg-amber-500/10 text-amber-700 dark:text-amber-400 ring-amber-500/50' 
-                },
-                { 
-                  id: 'IV' as TaskQuadrant, 
-                  label: '第Ⅳ領域（無駄）', 
-                  desc: '重要ではない かつ 緊急ではない', 
-                  sub: '時間潰し、過度の娯楽、単なる逃避行動など。成果を生まない、または削減すべき無駄。',
-                  count: tasks.filter(t => getTaskQuadrant(t.priorityLetter, t.priorityNumber) === 'IV').length, 
-                  color: 'border-zinc-200 dark:border-zinc-800 bg-zinc-500/5 hover:bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 ring-zinc-500/50' 
-                },
-              ].map((quad) => {
-                const isFiltered = selectedQuadrant === quad.id;
-                return (
-                  <div
-                    key={quad.id}
-                    onClick={() => setSelectedQuadrant(isFiltered ? null : quad.id)}
-                    className={`border rounded-xl p-2.5 sm:p-4 cursor-pointer transition-all ${quad.color} ${
-                      isFiltered ? 'ring-2 ring-offset-2 dark:ring-offset-zinc-950 bg-zinc-100 dark:bg-zinc-800/40 border-transparent shadow-xs scale-[1.01]' : ''
-                    } flex flex-col justify-center min-h-[56px] sm:min-h-[72px]`}
-                  >
-                    <div className="flex justify-between items-center gap-1">
-                      <div className="flex flex-col min-w-0">
-                        <span className="text-[0.875rem] sm:text-xs font-black tracking-wide leading-tight break-words">{quad.label}</span>
-                        <p className="hidden sm:block text-[0.8125rem] font-bold opacity-80 mt-0.5">{quad.desc}</p>
+            {isWide ? (
+              <section className="grid grid-cols-2 grid-rows-2 gap-3 flex-1 min-h-[32rem]" id="coovey-matrix-grid">
+                {QUADRANT_CONFIGS.map((quad) => {
+                  const qTasks = sortTaskList(statusFilteredTasks.filter((t) => getTaskQuadrant(t.priorityLetter, t.priorityNumber) === quad.id));
+                  const isOver = drag.over?.kind === 'quadrant' && drag.over.value === quad.id;
+                  return (
+                    <div
+                      key={quad.id}
+                      data-drop-kind="quadrant"
+                      data-drop-value={quad.id}
+                      id={`matrix-zone-${quad.id}`}
+                      className={`border-2 rounded-2xl flex flex-col min-h-0 transition-all ${quad.color} ${isOver ? 'ring-4 ring-sky-400 border-sky-400 scale-[1.01]' : ''}`}
+                    >
+                      <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-current/10">
+                        <div className="min-w-0">
+                          <span className="text-sm font-black">{quad.label}</span>
+                          <span className="ml-2 text-[0.8125rem] font-bold opacity-80">{quad.desc}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-none">
+                          <span className="text-[0.8125rem] font-black px-2 py-0.5 rounded-full bg-zinc-900/10 dark:bg-zinc-100/10 text-zinc-700 dark:text-zinc-300">{qTasks.length}件</span>
+                          <button
+                            onClick={() => setQuadrantPopup(quad)}
+                            className="p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 rounded-full hover:bg-zinc-500/10"
+                            title={`${quad.label}の説明`}
+                          >
+                            <HelpCircle className="w-4 h-4" />
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-1 sm:gap-1.5 flex-none">
-                        <span className="text-[0.75rem] sm:text-[0.8125rem] font-black px-1.5 py-0.5 rounded-full bg-zinc-900/10 dark:bg-zinc-100/10 text-zinc-700 dark:text-zinc-300">
-                          {quad.count}件
-                        </span>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setQuadrantPopup(quad);
-                          }}
-                          className="p-1 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 transition-colors rounded-full hover:bg-zinc-500/10"
-                          title={`${quad.label}の説明`}
-                        >
-                          <HelpCircle className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-                        </button>
+                      <div className="flex-1 min-h-0 overflow-y-auto p-1.5 flex flex-col gap-1 bg-white/70 dark:bg-zinc-950/40 rounded-b-2xl">
+                        {qTasks.length === 0 ? (
+                          <div className="text-[0.8125rem] text-zinc-400 italic text-center py-6">ここへドロップできます</div>
+                        ) : (
+                          qTasks.map((t) => (
+                            <TaskRow
+                              key={t.id}
+                              task={t}
+                              layout={isXL ? 'row' : 'stack'}
+                              todayStr={todayStr}
+                              handlers={rowHandlers}
+                              dragProps={drag.bind(t.id, t.title)}
+                              isDragging={drag.visual?.taskId === t.id}
+                            />
+                          ))
+                        )}
                       </div>
                     </div>
+                  );
+                })}
+              </section>
+            ) : (
+              <>
+                <section className="grid grid-cols-2 gap-2 sticky -top-2 z-30 bg-zinc-50 dark:bg-zinc-950 pt-2 pb-2 -mt-2 isolate" id="coovey-matrix-grid">
+                  {QUADRANT_CONFIGS.map((quad) => {
+                    const isFiltered = selectedQuadrant === quad.id;
+                    const isOver = drag.over?.kind === 'quadrant' && drag.over.value === quad.id;
+                    const count = statusFilteredTasks.filter((t) => getTaskQuadrant(t.priorityLetter, t.priorityNumber) === quad.id).length;
+                    return (
+                      <div
+                        key={quad.id}
+                        data-drop-kind="quadrant"
+                        data-drop-value={quad.id}
+                        id={`matrix-zone-${quad.id}`}
+                        onClick={() => setSelectedQuadrant(isFiltered ? null : quad.id)}
+                        className={`border-2 rounded-xl px-2.5 py-2 cursor-pointer transition-all bg-white dark:bg-zinc-900 ${quad.color} ${
+                          isFiltered ? 'ring-2 ring-offset-1 dark:ring-offset-zinc-950' : ''
+                        } ${isOver ? 'ring-4 ring-sky-400 border-sky-400 scale-[1.03]' : ''} flex items-center justify-between gap-1 min-h-[52px]`}
+                      >
+                        <span className="text-[0.875rem] font-black leading-tight break-words">{quad.label}</span>
+                        <span className="flex items-center gap-1 flex-none">
+                          <span className="text-[0.75rem] font-black px-1.5 py-0.5 rounded-full bg-zinc-900/10 dark:bg-zinc-100/10 text-zinc-700 dark:text-zinc-300">{count}</span>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setQuadrantPopup(quad);
+                            }}
+                            className="p-0.5 text-zinc-400 rounded-full"
+                            title={`${quad.label}の説明`}
+                          >
+                            <HelpCircle className="w-4 h-4" />
+                          </button>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </section>
+                <section className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl p-2 shadow-xs">
+                  <div className="flex items-center gap-2 px-1 pb-1.5">
+                    <h3 className="text-xs font-black tracking-wider text-zinc-400 dark:text-zinc-500">
+                      {selectedQuadrant ? `第${selectedQuadrant}領域のタスク` : 'すべての領域のタスク'}
+                    </h3>
+                    {selectedQuadrant && (
+                      <button onClick={() => setSelectedQuadrant(null)} className="text-[0.8125rem] font-bold text-amber-600 dark:text-amber-400 underline">
+                        選択解除
+                      </button>
+                    )}
                   </div>
-                );
-              })}
-            </section>
+                  <div className="flex flex-col gap-1.5">
+                    {(() => {
+                      const list = sortTaskList(
+                        statusFilteredTasks.filter((t) => !selectedQuadrant || getTaskQuadrant(t.priorityLetter, t.priorityNumber) === selectedQuadrant)
+                      );
+                      if (list.length === 0) {
+                        return (
+                          <div className="py-10 text-center text-xs text-zinc-400 dark:text-zinc-500">
+                            <Inbox className="w-8 h-8 text-zinc-300 dark:text-zinc-700 mx-auto mb-2" />
+                            該当するタスクがありません。
+                          </div>
+                        );
+                      }
+                      return list.map((t) => (
+                        <TaskRow
+                          key={t.id}
+                          task={t}
+                          layout="stack"
+                          todayStr={todayStr}
+                          handlers={rowHandlers}
+                          dragProps={drag.bind(t.id, t.title)}
+                          isDragging={drag.visual?.taskId === t.id}
+                        />
+                      ));
+                    })()}
+                  </div>
+                </section>
+              </>
+            )}
 
-            {/* Quadrant Explanation Popup / Modal */}
             {quadrantPopup && (
-              <div 
-                className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fade-in" 
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 animate-fade-in"
                 id="quadrant-popup-modal"
                 onClick={() => setQuadrantPopup(null)}
               >
-                <div 
-                  className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-5 shadow-xl relative animate-scale-in"
+                <div
+                  className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-5 shadow-xl relative"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <div className="flex justify-between items-start mb-3">
                     <div>
-                      <span className="text-[0.8125rem] font-black tracking-wider uppercase text-zinc-400 dark:text-zinc-500">
-                        領域の説明
-                      </span>
-                      <h3 className="text-sm font-black text-zinc-900 dark:text-zinc-100 mt-0.5">
-                        {quadrantPopup.label}
-                      </h3>
+                      <span className="text-[0.8125rem] font-black tracking-wider text-zinc-400 dark:text-zinc-500">領域の説明</span>
+                      <h3 className="text-sm font-black text-zinc-900 dark:text-zinc-100 mt-0.5">{quadrantPopup.label}</h3>
                     </div>
-                    <button
-                      onClick={() => setQuadrantPopup(null)}
-                      className="p-1 rounded-full text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
-                    >
+                    <button onClick={() => setQuadrantPopup(null)} className="p-1 rounded-full text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800">
                       <X className="w-4 h-4" />
                     </button>
                   </div>
-                  
                   <div className="space-y-3">
-                    <div className="px-2.5 py-1.5 bg-zinc-50 dark:bg-zinc-950 rounded-lg border border-zinc-100 dark:border-zinc-850">
+                    <div className="px-2.5 py-1.5 bg-zinc-50 dark:bg-zinc-950 rounded-lg border border-zinc-100 dark:border-zinc-800">
                       <span className="text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mr-1.5">性質:</span>
                       <span className="text-xs font-black text-zinc-700 dark:text-zinc-300">{quadrantPopup.desc}</span>
                     </div>
-                    <p className="text-xs font-medium text-zinc-600 dark:text-zinc-400 leading-relaxed">
-                      {quadrantPopup.sub}
-                    </p>
+                    <p className="text-xs font-medium text-zinc-600 dark:text-zinc-400 leading-relaxed">{quadrantPopup.sub}</p>
+                    <p className="text-[0.8125rem] font-semibold text-zinc-500 dark:text-zinc-400 leading-relaxed">ドロップしたとき: {quadrantPopup.drop}</p>
                   </div>
-
                   <div className="mt-5 flex justify-end">
-                    <button
-                      onClick={() => setQuadrantPopup(null)}
-                      className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-100 dark:hover:bg-zinc-200 dark:text-zinc-900 text-xs font-black rounded-lg transition-all shadow-xs"
-                    >
+                    <button onClick={() => setQuadrantPopup(null)} className="px-3 py-1.5 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 text-xs font-black rounded-lg">
                       閉じる
                     </button>
                   </div>
                 </div>
               </div>
             )}
-
-            {/* List of Tasks in Selected Quadrant */}
-            <section className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl p-5 shadow-xs">
-              <div className="flex items-center justify-between border-b border-zinc-100 dark:border-zinc-800 pb-4 mb-4">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-xs font-black tracking-wider uppercase text-zinc-400 dark:text-zinc-500">
-                    {selectedQuadrant ? `第${selectedQuadrant}領域のタスク一覧` : 'すべての領域のタスク一覧'}
-                  </h3>
-                  <span className="text-xs font-bold px-2 py-0.5 bg-zinc-100 dark:bg-zinc-850 rounded-full text-zinc-500">
-                    {
-                      tasks.filter(t => 
-                        !selectedQuadrant || getTaskQuadrant(t.priorityLetter, t.priorityNumber) === selectedQuadrant
-                      ).length
-                    }件
-                  </span>
-                  {selectedQuadrant && (
-                    <button
-                      onClick={() => setSelectedQuadrant(null)}
-                      className="text-[0.8125rem] font-bold text-amber-600 dark:text-amber-400 underline hover:no-underline ml-1"
-                    >
-                      選択解除
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Table of tasks */}
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="bg-zinc-50/50 dark:bg-zinc-800/10 border-b border-zinc-200/50 dark:border-zinc-850 text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 tracking-wider">
-                      <th className="w-12 sm:w-24 py-2 px-1 sm:px-3 text-center">
-                        <span className="hidden sm:inline">達成状況</span>
-                        <span className="sm:hidden block leading-tight text-[0.75rem]">達成<br/>状況</span>
-                      </th>
-                      <th className="w-10 sm:w-16 py-2 px-1 sm:px-2 text-center">
-                        <span className="hidden sm:inline">優先度</span>
-                        <span className="sm:hidden block leading-tight text-[0.75rem]">優先<br/>度</span>
-                      </th>
-                      <th className="py-2 px-2 sm:px-3">タスク内容</th>
-                      <th className="w-16 sm:w-28 py-2 px-1 sm:px-3 text-center">期日</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800/60">
-                    {
-                      tasks.filter(t => 
-                        !selectedQuadrant || getTaskQuadrant(t.priorityLetter, t.priorityNumber) === selectedQuadrant
-                      ).length === 0 ? (
-                        <tr>
-                          <td colSpan={4} className="py-12 text-center text-xs text-zinc-400 dark:text-zinc-500">
-                            <Inbox className="w-8 h-8 text-zinc-300 dark:text-zinc-700 mx-auto mb-2" />
-                            この領域には該当するタスクがありません。
-                          </td>
-                        </tr>
-                      ) : (
-                        [...tasks]
-                          .filter(t => 
-                            !selectedQuadrant || getTaskQuadrant(t.priorityLetter, t.priorityNumber) === selectedQuadrant
-                          )
-                          .sort((a, b) => {
-                            // 1. Due Date sorting (ascending, empty/invalid at bottom)
-                            const dateA = a.dueDate || '9999-12-31';
-                            const dateB = b.dueDate || '9999-12-31';
-                            if (dateA !== dateB) return dateA.localeCompare(dateB);
-
-                            // 2. Priority Letter sorting
-                            const letterWeight = { A: 10, B: 5, C: 2, '': 0 };
-                            const weightA = letterWeight[a.priorityLetter || ''] || 0;
-                            const weightB = letterWeight[b.priorityLetter || ''] || 0;
-                            if (weightA !== weightB) return weightB - weightA;
-
-                            // 3. Priority Number sorting
-                            const numA = a.priorityNumber === null ? 999 : a.priorityNumber;
-                            const numB = b.priorityNumber === null ? 999 : b.priorityNumber;
-                            if (numA !== numB) return numA - numB;
-
-                            // 4. Title sorting (ascending)
-                            return (a.title || '').localeCompare(b.title || '');
-                          })
-                          .map((task) => {
-                            const statusBadge = getStatusBadgeInfo(task.status || 'pending');
-                            const isCompleted = task.status === 'completed';
-
-                            return (
-                              <tr
-                                key={task.id}
-                                className={`group hover:bg-zinc-50/60 dark:hover:bg-zinc-800/25 cursor-pointer select-none transition-colors ${
-                                  isCompleted ? 'opacity-60' : ''
-                                }`}
-                                onClick={(e) => {
-                                  if (longPressActiveRef.current) {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    longPressActiveRef.current = false;
-                                  }
-                                }}
-                                onMouseDown={(e) => {
-                                  if (e.button === 0) {
-                                    startLongPress(task.id);
-                                  }
-                                }}
-                                onMouseUp={cancelLongPress}
-                                onMouseLeave={cancelLongPress}
-                                onTouchStart={() => startLongPress(task.id)}
-                                onTouchEnd={cancelLongPress}
-                                onTouchCancel={cancelLongPress}
-                                title="長押しで詳細・編集を開く"
-                              >
-                                <td className="py-2 px-1 sm:px-3 text-center" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
-                                  {inlineEditingTaskId === task.id && inlineEditingField === 'status' ? (
-                                    <select
-                                      value={task.status || 'pending'}
-                                      onChange={(e) => {
-                                        handleUpdateTaskFieldDirect(task.id, 'status', e.target.value as TaskStatus);
-                                        setInlineEditingTaskId(null);
-                                        setInlineEditingField(null);
-                                      }}
-                                      onBlur={() => {
-                                        setInlineEditingTaskId(null);
-                                        setInlineEditingField(null);
-                                      }}
-                                      autoFocus
-                                      className="px-1 py-0.5 text-xs bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg focus:outline-none font-bold text-zinc-800 dark:text-zinc-100 shadow-sm"
-                                    >
-                                      <option value="pending">未達成</option>
-                                      <option value="in_progress">進行中 (・)</option>
-                                      <option value="completed">完了 (✓)</option>
-                                      <option value="postponed">先送り (→)</option>
-                                      <option value="delegated">委任 (○)</option>
-                                      <option value="deleted">削除 (×)</option>
-                                    </select>
-                                  ) : (
-                                    <button
-                                      onClick={() => {
-                                        setInlineEditingTaskId(task.id);
-                                        setInlineEditingField('status');
-                                      }}
-                                      className={`inline-flex items-center justify-center w-7 h-7 rounded-lg border text-xs font-black transition-all hover:scale-105 active:scale-95 ${statusBadge.bg}`}
-                                      title="達成状況を変更"
-                                    >
-                                      {statusBadge.symbol || (
-                                        <div className="w-3.5 h-3.5 rounded-full border border-zinc-300 dark:border-zinc-700 hover:border-zinc-400" />
-                                      )}
-                                    </button>
-                                  )}
-                                </td>
-
-                                {/* Priority Letter/Number Badge with inline selector */}
-                                <td 
-                                  className="py-2 px-1 sm:px-2 text-center font-bold text-xs"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setInlineEditingTaskId(task.id);
-                                    setInlineEditingField('priority');
-                                  }}
-                                >
-                                  {inlineEditingTaskId === task.id && inlineEditingField === 'priority' ? (
-                                    <select
-                                      value={task.priorityLetter ? `${task.priorityLetter}${task.priorityNumber || ''}` : ''}
-                                      onChange={(e) => {
-                                        handleUpdateTaskFieldDirect(task.id, 'priority', e.target.value);
-                                        setInlineEditingTaskId(null);
-                                        setInlineEditingField(null);
-                                      }}
-                                      onBlur={() => {
-                                        setInlineEditingTaskId(null);
-                                        setInlineEditingField(null);
-                                      }}
-                                      onClick={(e) => e.stopPropagation()}
-                                      onMouseDown={(e) => e.stopPropagation()}
-                                      onTouchStart={(e) => e.stopPropagation()}
-                                      autoFocus
-                                      className="px-1 py-0.5 text-xs bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded-lg focus:outline-none max-w-[85px] font-black text-zinc-900 dark:text-zinc-100 shadow-sm"
-                                    >
-                                      <option value="">なし</option>
-                                      <optgroup label="A (最重要)">
-                                        {Array.from({ length: 10 }, (_, i) => `A${i+1}`).map((opt) => (
-                                          <option key={opt} value={opt}>{opt}</option>
-                                        ))}
-                                      </optgroup>
-                                      <optgroup label="B (重要)">
-                                        {Array.from({ length: 10 }, (_, i) => `B${i+1}`).map((opt) => (
-                                          <option key={opt} value={opt}>{opt}</option>
-                                        ))}
-                                      </optgroup>
-                                      <optgroup label="C (重要ではない)">
-                                        {Array.from({ length: 10 }, (_, i) => `C${i+1}`).map((opt) => (
-                                          <option key={opt} value={opt}>{opt}</option>
-                                        ))}
-                                      </optgroup>
-                                    </select>
-                                  ) : (
-                                    <span className="cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 p-1 rounded-lg transition-all" title="優先度を変更">
-                                      {task.priorityLetter ? (
-                                        <span className={`inline-block px-1.5 py-0.5 rounded text-[0.8125rem] font-black tracking-wide ${
-                                          task.priorityLetter === 'A'
-                                            ? 'bg-red-500 text-white'
-                                            : task.priorityLetter === 'B'
-                                            ? 'bg-emerald-500 text-white'
-                                            : 'bg-zinc-500 text-white'
-                                        }`}>
-                                          {task.priorityLetter}{task.priorityNumber || ''}
-                                        </span>
-                                      ) : (
-                                        <span className="text-zinc-300 dark:text-zinc-700 px-1">-</span>
-                                      )}
-                                    </span>
-                                  )}
-                                </td>
-
-                                {/* Title & Memo snippet with inline editor */}
-                                <td 
-                                  className="py-2 px-2 sm:px-3 text-xs cursor-pointer hover:bg-zinc-50/80 dark:hover:bg-zinc-800/15 transition-colors"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setInlineEditingTaskId(task.id);
-                                    setInlineEditingField('title');
-                                    setInlineEditingTitleValue(task.title);
-                                  }}
-                                >
-                                  {inlineEditingTaskId === task.id && inlineEditingField === 'title' ? (
-                                    <div className="flex items-center gap-1.5 w-full" onClick={(e) => e.stopPropagation()}>
-                                      <input
-                                        type="text"
-                                        value={inlineEditingTitleValue}
-                                        onChange={(e) => setInlineEditingTitleValue(e.target.value)}
-                                        onKeyDown={(e) => {
-                                          if (e.key === 'Enter') {
-                                            handleUpdateTaskFieldDirect(task.id, 'title', inlineEditingTitleValue);
-                                            setInlineEditingTaskId(null);
-                                            setInlineEditingField(null);
-                                          } else if (e.key === 'Escape') {
-                                            setInlineEditingTaskId(null);
-                                            setInlineEditingField(null);
-                                          }
-                                        }}
-                                        onBlur={() => {
-                                          handleUpdateTaskFieldDirect(task.id, 'title', inlineEditingTitleValue);
-                                          setInlineEditingTaskId(null);
-                                          setInlineEditingField(null);
-                                        }}
-                                        onMouseDown={(e) => e.stopPropagation()}
-                                        onTouchStart={(e) => e.stopPropagation()}
-                                        autoFocus
-                                        className="w-full px-2.5 py-1 text-xs bg-white dark:bg-zinc-850 border border-zinc-300 dark:border-zinc-700 rounded-lg focus:outline-none focus:ring-1 focus:ring-zinc-500 text-zinc-800 dark:text-zinc-100 font-semibold"
-                                      />
-                                    </div>
-                                  ) : (
-                                    <div className="flex flex-col gap-0.5">
-                                      <span className={`font-semibold text-zinc-800 dark:text-zinc-200 hover:underline ${
-                                        isCompleted ? 'line-through text-zinc-400 dark:text-zinc-500' : ''
-                                      }`}>
-                                        {task.title}
-                                      </span>
-                                      {task.notes && (
-                                        <span className="text-[0.8125rem] text-zinc-400 dark:text-zinc-500 line-clamp-1 max-w-lg">
-                                          {task.notes}
-                                        </span>
-                                      )}
-                                      {task.reminderEnabled && task.reminderTime && (
-                                        <div className="flex items-center gap-1 text-[0.75rem] text-sky-500 font-bold mt-0.5">
-                                          <Clock className="w-2.5 h-2.5" />
-                                          <span>通知: {task.reminderTime}</span>
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </td>
-
-                                <td className="py-2 px-1 sm:px-3 text-center text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500">
-                                  <span className={task.dueDate === todayStr ? 'text-zinc-900 dark:text-zinc-100 underline decoration-zinc-900 dark:decoration-zinc-100 decoration-2' : ''}>
-                                    {task.dueDate === todayStr ? (
-                                      '今日'
-                                    ) : (
-                                      <>
-                                        <span className="hidden sm:inline">{task.dueDate}</span>
-                                        <span className="sm:hidden inline">{formatDueDate(task.dueDate)}</span>
-                                      </>
-                                    )}
-                                  </span>
-                                </td>
-                              </tr>
-                            );
-                          })
-                      )
-                    }
-                  </tbody>
-                </table>
-              </div>
-            </section>
-
           </div>
         )}
 
-        {/* VIEW 2: デイリータスク画面 (一週間分の一覧に、各曜日の当日タスクのみを表示) */}
+        {/* VIEW 2: デイリータスク画面 (7日間。タスクを別の日へドラッグ＆ドロップで実施予定日を変更) */}
         {currentView === 'daily' && (
-          <div className="flex flex-col gap-5 animate-fade-in" id="view-daily-weekly-container">
-            
-            {/* Week navigation controller */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl p-4 shadow-xs">
-              
-              <div>
-                <h3 className="text-xs font-black tracking-wider uppercase text-zinc-400 dark:text-zinc-500">
-                  7日間のデイリープランナー
-                </h3>
-                <p className="text-xs font-semibold text-zinc-600 dark:text-zinc-300 mt-0.5">
-                  選択した日から始まる7日間の各曜日のタスクを整理・表示します。
-                </p>
+          <div className="flex flex-col gap-3 animate-fade-in md:flex-1 md:min-h-0" id="view-daily-weekly-container">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl px-3 py-2 sm:px-4 shadow-xs">
+              <div className="flex items-center justify-between md:justify-start gap-3 min-w-0">
+                <h3 className="text-xs font-black tracking-wider text-zinc-400 dark:text-zinc-500 whitespace-nowrap truncate"><span className="hidden sm:inline">7日間の</span>デイリープランナー</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowDailyHelp(true)}
+                  className="inline-flex items-center gap-1 text-[0.8125rem] font-bold text-sky-600 dark:text-sky-400 hover:underline whitespace-nowrap"
+                  id="btn-daily-help"
+                >
+                  <HelpCircle className="w-4 h-4" />
+                  週プランナーの使い方
+                </button>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center justify-center gap-1.5 sm:gap-2" id="week-range-nav">
                 <button
                   onClick={() => handleShiftWeek(-1)}
-                  className="p-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500"
+                  className="p-1 sm:p-2 rounded-xl border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300"
                   title="7日前"
+                  aria-label="7日前"
                 >
-                  <ChevronLeft className="w-4 h-4" />
+                  <ChevronLeft className="w-5 h-5" />
                 </button>
-                
-                <span className="text-xs font-bold font-mono tracking-tight whitespace-nowrap text-zinc-800 dark:text-zinc-200 px-3 py-1 bg-zinc-50 dark:bg-zinc-950 rounded-lg">
-                  <span className="sm:hidden">{weekDays[0].slice(5).replace('-', '/')} 〜 {weekDays[6].slice(5).replace('-', '/')}</span>
-                  <span className="hidden sm:inline">{weekDays[0]} 〜 {weekDays[6]}</span>
+                <span className="font-black tracking-tight whitespace-nowrap text-zinc-900 dark:text-zinc-50 text-lg sm:text-2xl xl:text-3xl px-0.5 sm:px-2" id="week-range-label">
+                  {fmtRangeDate(weekDays[0])}
+                  <span className="mx-1.5 text-zinc-400">〜</span>
+                  {fmtRangeDate(weekDays[6])}
                 </span>
-
                 <button
                   onClick={() => handleShiftWeek(1)}
-                  className="p-1.5 rounded-lg border border-zinc-200 dark:border-zinc-800 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-500"
+                  className="p-1 sm:p-2 rounded-xl border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300"
                   title="7日後"
+                  aria-label="7日後"
                 >
-                  <ChevronRight className="w-4 h-4" />
+                  <ChevronRight className="w-5 h-5" />
                 </button>
-
                 <button
                   onClick={() => setSelectedDate(getLocalDateString())}
-                  className="px-2.5 py-1 text-[0.8125rem] font-bold whitespace-nowrap rounded bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 ml-1 hover:scale-102 transition-all"
+                  className="px-2 sm:px-3 py-1 sm:py-1.5 text-[0.875rem] font-bold whitespace-nowrap rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950"
                 >
                   今日
                 </button>
               </div>
 
+              <div className="flex items-center justify-end gap-1.5">
+                <StatusFilterSelect value={statusFilter} onChange={setStatusFilter} className="max-w-[11rem] sm:max-w-none" />
+                <SortToggle dir={sortDir} onToggle={toggleSortDir} />
+              </div>
             </div>
 
-            {/* Grid of the 7 Days representing the requested layout */}
-            <div className="grid grid-cols-1 md:grid-cols-7 gap-3" id="weekly-days-grid">
+            <div className="grid grid-cols-1 md:grid-cols-7 gap-2 md:flex-1 md:min-h-[24rem]" id="weekly-days-grid">
               {weekDays.map((dateStr) => {
                 const isToday = dateStr === todayStr;
                 const jpDay = getJPDayOfWeek(dateStr);
                 const isWeekend = jpDay === '土' || jpDay === '日';
-                
-                // Get only tasks for this exact day
-                const dayTasks = tasks.filter((t) => t.dueDate === dateStr);
-                const completedCount = dayTasks.filter((t) => t.status === 'completed').length;
-                const progressPct = dayTasks.length > 0 ? Math.round((completedCount / dayTasks.length) * 100) : 0;
+                const allDayTasks = tasks.filter((t) => t.dueDate === dateStr && t.status !== 'deleted');
+                const dayTasks = sortTaskList(statusFilteredTasks.filter((t) => t.dueDate === dateStr));
+                const completedCount = allDayTasks.filter((t) => t.status === 'completed').length;
+                const progressPct = allDayTasks.length > 0 ? Math.round((completedCount / allDayTasks.length) * 100) : 0;
+                const isOver = drag.over?.kind === 'date' && drag.over.value === dateStr;
 
                 return (
                   <div
                     key={dateStr}
-                    className={`border rounded-xl p-3 flex flex-col justify-between min-h-[300px] transition-all bg-white dark:bg-zinc-900/90 ${
-                      isToday
-                        ? 'border-zinc-900 dark:border-zinc-100 ring-2 ring-zinc-900/5 dark:ring-zinc-100/5 shadow-xs'
+                    data-drop-kind="date"
+                    data-drop-value={dateStr}
+                    id={`day-col-${dateStr}`}
+                    className={`border-2 rounded-xl p-1.5 flex flex-col md:min-h-0 transition-all bg-white dark:bg-zinc-900/90 ${
+                      isOver
+                        ? 'border-sky-400 ring-4 ring-sky-400/40 bg-sky-50 dark:bg-sky-950/30'
+                        : isToday
+                        ? 'border-zinc-900 dark:border-zinc-100'
                         : isWeekend
                         ? 'border-zinc-200/60 dark:border-zinc-800/60 bg-zinc-50/50 dark:bg-zinc-900/30'
                         : 'border-zinc-200/60 dark:border-zinc-800/80'
                     }`}
                   >
-                    
-                    {/* Day Header */}
-                    <div className="border-b border-zinc-100 dark:border-zinc-800 pb-2 mb-2">
-                      <div className="flex justify-between items-center">
-                        <span className="text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500">
-                          {dateStr.split('-').slice(1).join('/')}
+                    <div className="border-b border-zinc-100 dark:border-zinc-800 pb-1 mb-1.5 px-1">
+                      <div className="flex justify-between items-baseline gap-1">
+                        <span className="flex items-baseline gap-1.5">
+                          <span className="text-base font-black text-zinc-800 dark:text-zinc-100">{Number(dateStr.slice(5, 7))}/{Number(dateStr.slice(8, 10))}</span>
+                          <span className={`text-sm font-black ${jpDay === '日' ? 'text-red-500' : jpDay === '土' ? 'text-blue-500' : 'text-zinc-500 dark:text-zinc-400'}`}>
+                            ({jpDay})
+                          </span>
                         </span>
                         {isToday && (
-                          <span className="text-[0.75rem] font-black bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 px-1.5 py-0.5 rounded-md tracking-wider">
-                            本日
-                          </span>
+                          <span className="text-[0.75rem] font-black bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 px-1.5 py-0.5 rounded-md">本日</span>
                         )}
                       </div>
-                      
-                      <div className="flex items-baseline gap-1 mt-1">
-                        <span className={`text-base font-black ${
-                          jpDay === '日' ? 'text-red-500' : jpDay === '土' ? 'text-blue-500' : 'text-zinc-800 dark:text-zinc-200'
-                        }`}>
-                          {jpDay}曜日
-                        </span>
-                      </div>
-
-                      {/* Micro Progress Bar */}
-                      {dayTasks.length > 0 && (
-                        <div className="mt-1.5 flex items-center justify-between gap-1">
+                      {allDayTasks.length > 0 && (
+                        <div className="mt-1 flex items-center justify-between gap-1">
                           <div className="flex-1 bg-zinc-100 dark:bg-zinc-800 h-1 rounded-full overflow-hidden">
-                            <div
-                              className="bg-zinc-900 dark:bg-zinc-100 h-full transition-all"
-                              style={{ width: `${progressPct}%` }}
-                            />
+                            <div className="bg-zinc-900 dark:bg-zinc-100 h-full transition-all" style={{ width: `${progressPct}%` }} />
                           </div>
-                          <span className="text-[0.75rem] font-bold text-zinc-400 font-mono">
-                            {progressPct}%
-                          </span>
+                          <span className="text-[0.75rem] font-bold text-zinc-400 font-mono">{progressPct}%</span>
                         </div>
                       )}
                     </div>
 
-                    {/* Day Tasks List Panel */}
-                    <div className="flex-1 flex flex-col gap-1.5 overflow-y-auto max-h-[220px] scrollbar-none">
+                    <div className="flex-1 md:min-h-0 flex flex-col gap-1.5 md:overflow-y-auto">
                       {dayTasks.length === 0 ? (
-                        <div className="text-[0.8125rem] text-zinc-400/80 dark:text-zinc-600 italic text-center py-8">
-                          予定なし
+                        <div className="text-[0.8125rem] text-zinc-400/80 dark:text-zinc-600 italic text-center py-3 md:py-6">
+                          {isOver ? 'ここへ移動' : '予定なし'}
                         </div>
                       ) : (
-                        dayTasks.map((t) => {
-                          const statusInfo = getStatusBadgeInfo(t.status || 'pending');
-                          return (
-                            <div
-                              key={t.id}
-                              onClick={() => handleSelectTaskForDetail(t.id)}
-                              className={`group p-2 rounded-lg border border-zinc-100 dark:border-zinc-800/80 hover:border-zinc-300 dark:hover:border-zinc-700 bg-zinc-50/50 dark:bg-zinc-950/40 hover:bg-white dark:hover:bg-zinc-900 cursor-pointer transition-all flex items-start gap-1.5 ${
-                                t.status === 'completed' ? 'opacity-55' : ''
-                              }`}
-                            >
-                              
-                              {/* Small status symbol inside day block */}
-                              <div className="flex-shrink-0" onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
-                                {inlineEditingTaskId === t.id && inlineEditingField === 'status' ? (
-                                  <select
-                                    value={t.status || 'pending'}
-                                    onChange={(e) => {
-                                      handleUpdateTaskFieldDirect(t.id, 'status', e.target.value as TaskStatus);
-                                      setInlineEditingTaskId(null);
-                                      setInlineEditingField(null);
-                                    }}
-                                    onBlur={() => {
-                                      setInlineEditingTaskId(null);
-                                      setInlineEditingField(null);
-                                    }}
-                                    autoFocus
-                                    className="px-1 py-0.5 text-[0.8125rem] bg-white dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 rounded focus:outline-none font-bold text-zinc-800 dark:text-zinc-100 shadow-sm"
-                                  >
-                                    <option value="pending">未達成</option>
-                                    <option value="in_progress">進行中 (・)</option>
-                                    <option value="completed">完了 (✓)</option>
-                                    <option value="postponed">先送り (→)</option>
-                                    <option value="delegated">委任 (○)</option>
-                                    <option value="deleted">削除 (×)</option>
-                                  </select>
-                                ) : (
-                                  <button
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setInlineEditingTaskId(t.id);
-                                      setInlineEditingField('status');
-                                    }}
-                                    className={`w-5 h-5 rounded border text-[0.75rem] font-black flex items-center justify-center transition-all hover:scale-105 active:scale-95 ${statusInfo.bg}`}
-                                    title={`ステータス変更: ${statusInfo.label}`}
-                                  >
-                                    {statusInfo.symbol || (
-                                      <div className="w-2.5 h-2.5 rounded-full border border-zinc-300 dark:border-zinc-700 hover:border-zinc-400" />
-                                    )}
-                                  </button>
-                                )}
-                              </div>
-
-                              {/* Title & priority identifier */}
-                              <div className="flex-1 min-w-0">
-                                <div className="text-[0.875rem] font-bold leading-snug break-words line-clamp-2">
-                                  {t.priorityLetter && (
-                                    <span className={`inline-block text-[0.75rem] font-black mr-1 rounded-sm px-0.5 ${
-                                      t.priorityLetter === 'A'
-                                        ? 'bg-red-500/10 text-red-500'
-                                        : t.priorityLetter === 'B'
-                                        ? 'bg-emerald-500/10 text-emerald-500'
-                                        : 'bg-zinc-500/10 text-zinc-500'
-                                    }`}>
-                                      {t.priorityLetter}{t.priorityNumber || ''}
-                                    </span>
-                                  )}
-                                  <span className={t.status === 'completed' ? 'line-through text-zinc-400 dark:text-zinc-600' : ''}>
-                                    {t.title}
-                                  </span>
-                                </div>
-                              </div>
-
-                            </div>
-                          );
-                        })
+                        dayTasks.map((t) => (
+                          <TaskRow
+                            key={t.id}
+                            task={t}
+                            layout="stack"
+                            todayStr={todayStr}
+                            handlers={rowHandlers}
+                            dragProps={drag.bind(t.id, t.title)}
+                            isDragging={drag.visual?.taskId === t.id}
+                          />
+                        ))
                       )}
                     </div>
 
-                    {/* Quick registration trigger within the specific day */}
-                    <div className="pt-2 mt-2 border-t border-zinc-100 dark:border-zinc-800/60">
+                    <div className="pt-1.5 mt-1.5 border-t border-zinc-100 dark:border-zinc-800/60">
                       <button
                         onClick={() => {
                           setSelectedDate(dateStr);
@@ -2247,29 +1732,51 @@ export default function App() {
                         <span>予定を作成</span>
                       </button>
                     </div>
-
                   </div>
                 );
               })}
             </div>
 
-            {/* Quick Summary Guidelines footer */}
-            <div className="p-4 bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl flex items-start gap-3">
-              <HelpCircle className="w-5 h-5 text-zinc-400 flex-shrink-0 mt-0.5" />
-              <div className="text-xs text-zinc-500 dark:text-zinc-400 leading-relaxed font-semibold">
-                <span className="font-bold text-zinc-800 dark:text-zinc-200 block mb-0.5">
-                  週プランナーの使い方
-                </span>
-                このビューは一週間分のカレンダーマトリクスを並べ、各曜日に直接割り当てられたタスクを厳密に抽出して一覧表示します。タスク内のステータス記号をクリックして完了（✓）や進行中（・）などに素早くサイクル切り替えできるほか、タスクボックスをクリックすることで詳細入力画面へと遷移し編集を行えます。
+            {showDailyHelp && (
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 animate-fade-in"
+                id="daily-help-modal"
+                onClick={() => setShowDailyHelp(false)}
+              >
+                <div
+                  className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-lg w-full p-5 shadow-xl"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex justify-between items-start mb-3">
+                    <h3 className="text-base font-black text-zinc-900 dark:text-zinc-100 flex items-center gap-1.5">
+                      <HelpCircle className="w-5 h-5 text-sky-500" />
+                      週プランナーの使い方
+                    </h3>
+                    <button onClick={() => setShowDailyHelp(false)} className="p-1 rounded-full text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800" aria-label="閉じる">
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                  <ul className="list-disc pl-5 space-y-1.5 text-sm text-zinc-600 dark:text-zinc-300 leading-relaxed font-medium">
+                    <li>選んだ日から始まる7日間を並べ、各日に実施予定日が入っているタスクを表示します。◀ ▶ で1週間ずつ移動、「今日」で今日からの7日間に戻ります。</li>
+                    <li>タスクを別の日へドラッグ＆ドロップすると、実施予定日がその日に変わります（スマホは少し長押ししてから動かします）。</li>
+                    <li>達成状況・重要度・緊急度はプルダウンでその場で変更できます。日付を押すとカレンダーが開き、日付を変更できます。</li>
+                    <li>タスク名を押すと詳細画面が開きます。「予定を作成」でその日の予定を詳細入力で作れます。</li>
+                    <li>上の「達成状況」の絞り込みと「期日」の並べ替え（押すたびに昇順・降順）は、ほかのタブと共通です。</li>
+                  </ul>
+                  <div className="mt-5 flex justify-end">
+                    <button onClick={() => setShowDailyHelp(false)} className="px-4 py-2 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 text-sm font-black rounded-lg">
+                      閉じる
+                    </button>
+                  </div>
+                </div>
               </div>
-            </div>
-
+            )}
           </div>
         )}
 
         {/* VIEW: 設定画面 (すべての画面上部から移動された通知許可〜読み込み設定) */}
         {currentView === 'settings' && (
-          <div className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl p-4 sm:p-6 shadow-xs max-w-2xl mx-auto animate-fade-in" id="view-settings-container">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl p-4 sm:p-6 shadow-xs max-w-2xl w-full mx-auto animate-fade-in" id="view-settings-container">
             <h2 className="text-base font-black text-zinc-800 dark:text-zinc-100 mb-6 flex items-center gap-2 pb-3 border-b border-zinc-100 dark:border-zinc-800">
               <Settings className="w-5 h-5 text-zinc-500" />
               <span className="flex-1">設定</span>
@@ -2539,7 +2046,7 @@ export default function App() {
 
         {/* VIEW 3: 詳細入力画面 (簡易登録画面の一覧から、一行選択して詳細入力画面へ遷移、または新規作成) */}
         {currentView === 'detail' && (
-          <div className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl px-4 pt-4 sm:px-6 sm:pt-6 shadow-xs max-w-2xl mx-auto animate-fade-in" id="view-detail-container">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl px-4 pt-4 sm:px-6 sm:pt-6 shadow-xs max-w-2xl w-full mx-auto animate-fade-in" id="view-detail-container">
             <TaskForm
               task={tasks.find((t) => t.id === editingTaskId) || null}
               defaultDate={selectedDate}
@@ -2561,11 +2068,11 @@ export default function App() {
 
       {/* BOTTOM SECTION: Navigation Tabs & Quick Registration (Visible on non-detail views) */}
       {currentView !== 'detail' && (
-        <div className="app-bottom w-full max-w-6xl mx-auto flex-none flex flex-col-reverse sm:flex-col gap-3 sm:gap-6 z-40 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-t border-zinc-200/80 dark:border-zinc-800/80 px-3 pt-3 sm:px-4 sm:pt-0 sm:bg-transparent sm:dark:bg-transparent sm:border-t-0" id="bottom-controls-section">
+        <div className="app-bottom w-full flex-none flex flex-col-reverse sm:flex-col lg:flex-row lg:items-start gap-2 sm:gap-3 lg:gap-6 z-40 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-t border-zinc-200/80 dark:border-zinc-800/80 px-3 pt-2 sm:px-4 lg:px-6 sm:pt-3" id="bottom-controls-section">
           
           {/* Tab switching buttons */}
-          <div className="border-0 sm:border-t border-zinc-200/60 dark:border-zinc-800 pt-0 sm:pt-6 w-full">
-            <div className="flex bg-zinc-100 dark:bg-zinc-900 p-1 rounded-xl max-w-lg mx-auto gap-1" id="bottom-navigation-tabs">
+          <div className="w-full lg:w-[24rem] lg:flex-none lg:pt-6">
+            <div className="flex bg-zinc-100 dark:bg-zinc-800/60 p-1 rounded-xl max-w-lg mx-auto lg:mx-0 gap-1" id="bottom-navigation-tabs">
               {([
                 { view: 'daily', label: 'デイリー' },
                 { view: 'matrix', label: '4つの領域' },
@@ -2592,10 +2099,7 @@ export default function App() {
 
           {/* 予定の簡易登録 (Quick Registration Panel) */}
           {(currentView === 'list' || currentView === 'matrix' || currentView === 'daily') && (
-            <section className="bg-transparent sm:bg-white dark:bg-transparent sm:dark:bg-zinc-900 border-0 sm:border border-zinc-200/60 dark:border-zinc-800 rounded-2xl p-0 sm:p-5 shadow-none sm:shadow-xs w-full" id="quick-register-panel">
-              <h3 className="hidden sm:block text-xs font-bold text-zinc-400 dark:text-zinc-500 mb-3 tracking-wider uppercase">
-                予定の簡易登録
-              </h3>
+            <section className="bg-transparent p-0 w-full lg:flex-1 min-w-0" id="quick-register-panel">
               
               <form onSubmit={handleQuickAdd} className="flex flex-row gap-1.5 sm:gap-2.5 items-end w-full" id="quick-add-form">
 
@@ -2718,6 +2222,14 @@ export default function App() {
             </section>
           )}
 
+        </div>
+      )}
+
+      {/* ドラッグ中の表示と、変更結果の通知 */}
+      <DragGhost visual={drag.visual} />
+      {toast && (
+        <div className="fixed left-1/2 -translate-x-1/2 bottom-40 lg:bottom-28 z-[150] px-4 py-2.5 rounded-xl bg-zinc-900/95 text-white dark:bg-zinc-100 dark:text-zinc-900 text-sm font-bold shadow-xl max-w-[92vw]" id="app-toast" role="status">
+          {toast}
         </div>
       )}
 
