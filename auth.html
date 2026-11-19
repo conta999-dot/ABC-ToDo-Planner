@@ -7,6 +7,7 @@
     <style>
       body { font-family: sans-serif; background: #fafafa; color: #18181b; margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; }
       #status { font-size: 16px; font-weight: 600; }
+      #login:active { background:#f4f4f5; }
       #detail { margin-top: 12px; font-size: 13px; color: #52525b; max-width: 28rem; }
     </style>
   </head>
@@ -14,6 +15,7 @@
     <div>
       <div id="status">Googleに接続しています…</div>
       <div id="detail">アカウントを選んだら、自動でアプリに戻ります。</div>
+      <button id="login" style="display:none;margin-top:20px;padding:12px 24px;font-size:16px;border-radius:8px;border:1px solid #d4d4d8;background:#fff;color:#18181b;">Googleでログイン</button>
     </div>
     <script type="module" src="/src/auth-bridge.ts"></script>
   </body>
