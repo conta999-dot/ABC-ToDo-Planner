@@ -17,7 +17,74 @@ export interface DeviceCalendarInfo {
   isPrimary: boolean;
   color: string | null;
   visible: boolean;
+  /** 端末でこのカレンダーの同期がオンか（オフだと Google に上がらない） */
+  syncEvents?: boolean;
+  accessLevel?: number;
 }
+
+/** 書き込み後に読み戻した予定 */
+export interface InsertedEventCheck {
+  eventId: string;
+  calendarId: string;
+  title: string;
+  start: string;
+  end: string;
+  allDay: boolean;
+  timezone: string;
+  deleted: boolean;
+}
+
+export interface CalendarTargetInfo {
+  id?: string;
+  displayName?: string;
+  accountName?: string;
+  accountType?: string;
+  visible?: boolean;
+  syncEvents?: boolean;
+}
+
+/** カレンダー内で見つかった、このアプリが登録したと思われる予定 */
+export interface AppEventInfo {
+  eventId: string;
+  title: string;
+  date: string;
+  allDay: boolean;
+  calendarId: string;
+  calendarName: string;
+  accountName: string;
+  dirty: boolean;
+  synced: boolean;
+}
+
+/** 直近のエクスポートの記録（端末に保存して設定画面に表示） */
+export interface ExportHistoryEntry {
+  at: string;
+  calendar: CalendarTargetInfo;
+  created: number;
+  failed: number;
+  items: { title: string; date: string; ok: boolean; note?: string }[];
+}
+
+export const EXPORT_HISTORY_STORAGE_KEY = 'abc_calendar_export_history';
+
+export const loadExportHistory = (): ExportHistoryEntry[] => {
+  try {
+    const raw = localStorage.getItem(EXPORT_HISTORY_STORAGE_KEY);
+    const list = raw ? (JSON.parse(raw) as ExportHistoryEntry[]) : [];
+    return Array.isArray(list) ? list : [];
+  } catch {
+    return [];
+  }
+};
+
+const saveExportHistory = (entry: ExportHistoryEntry) => {
+  try {
+    const list = [entry, ...loadExportHistory()].slice(0, 5);
+    localStorage.setItem(EXPORT_HISTORY_STORAGE_KEY, JSON.stringify(list));
+  } catch {
+    // ignore
+  }
+};
 
 export interface ExportResult {
   created: number;
@@ -29,6 +96,8 @@ interface InsertItemResult {
   taskId: string;
   status: 'created' | 'failed';
   error?: string;
+  eventId?: string;
+  check?: InsertedEventCheck;
 }
 
 interface DeviceCalendarPlugin {
@@ -39,7 +108,9 @@ interface DeviceCalendarPlugin {
   insertEvents(options: {
     calendarId: string;
     events: { taskId: string; title: string; description: string; date: string }[];
-  }): Promise<{ results: InsertItemResult[] }>;
+  }): Promise<{ results: InsertItemResult[]; calendar?: CalendarTargetInfo }>;
+  findAppEvents(options: { prefix: string; calendarId?: string }): Promise<{ events: AppEventInfo[] }>;
+  deleteEvents(options: { eventIds: string[] }): Promise<{ deleted: number; errors: string[] }>;
   cleanLegacyMarkers(options: { calendarId: string }): Promise<{ adopted: { taskId: string; eventId: string }[] }>;
 }
 
@@ -122,6 +193,8 @@ export const listWritableCalendars = async (): Promise<DeviceCalendarInfo[]> => 
 /** 既定のカレンダー: ログイン中のメールと同じ Google アカウントのメインカレンダー → 主カレンダー → 先頭 */
 export const pickDefaultCalendar = (calendars: DeviceCalendarInfo[], email?: string | null): DeviceCalendarInfo | undefined => {
   const lower = (s: string) => (s || '').toLowerCase();
+  const usable = calendars.filter((c) => c.visible !== false && c.syncEvents !== false);
+  if (usable.length > 0) calendars = usable;
   const isGoogle = (c: DeviceCalendarInfo) => c.accountType === 'com.google';
   if (email) {
     const e = lower(email);
@@ -138,6 +211,10 @@ export interface ExportOutcome {
   exportedTaskIds: string[];
   /** v0.5.1 の目印を消した予定の数 */
   cleanedLegacy: number;
+  /** 書き込み先のカレンダー */
+  calendar?: CalendarTargetInfo;
+  /** 書き込んだ予定の読み戻し結果（日付の確認用） */
+  history?: ExportHistoryEntry;
 }
 
 /**
@@ -165,8 +242,9 @@ export const exportCompletedTasksToDeviceCalendar = async (tasks: Task[], prefix
   const exportedTaskIds = tasks.filter((t) => adopted.has(t.id) && !t.calendarExported).map((t) => t.id);
   if (targets.length > 0) {
     let results: InsertItemResult[];
+    let calendar: CalendarTargetInfo | undefined;
     try {
-      ({ results } = await DeviceCalendar.insertEvents({
+      ({ results, calendar } = await DeviceCalendar.insertEvents({
         calendarId,
         events: targets.map((task) => ({
           taskId: task.id,
@@ -178,16 +256,54 @@ export const exportCompletedTasksToDeviceCalendar = async (tasks: Task[], prefix
     } catch (error) {
       throw toCalendarError(error, '書き込み');
     }
-    const titles = new Map(targets.map((t) => [t.id, t.title]));
+    const byId = new Map(targets.map((t) => [t.id, t]));
+    const items: ExportHistoryEntry['items'] = [];
     for (const r of results) {
+      const task = byId.get(r.taskId);
+      const expected = task ? eventDateOf(task) : '';
+      const title = task ? buildEventTitle(task, prefix) : r.taskId;
       if (r.status === 'created') {
+        const c = r.check;
+        // 読み戻した予定が、終日・UTC・正しい日付になっているか確認
+        const ok = !!c && c.allDay && c.timezone === 'UTC' && c.start === expected && !c.deleted && c.calendarId === calendarId;
         summary.created += 1;
         exportedTaskIds.push(r.taskId);
+        items.push({ title, date: c?.start || expected, ok, note: ok ? undefined : `確認できない項目あり: ${JSON.stringify(c || {})}` });
       } else {
         summary.failed += 1;
-        summary.errors.push(`${titles.get(r.taskId) || r.taskId}: ${r.error || 'unknown'}`);
+        summary.errors.push(`${task?.title || r.taskId}: ${r.error || 'unknown'}`);
+        items.push({ title, date: expected, ok: false, note: r.error || 'unknown' });
       }
     }
+    const history: ExportHistoryEntry = {
+      at: new Date().toISOString(),
+      calendar: calendar || { id: calendarId },
+      created: summary.created,
+      failed: summary.failed,
+      items,
+    };
+    saveExportHistory(history);
+    return { summary, exportedTaskIds, cleanedLegacy, calendar, history };
   }
   return { summary, exportedTaskIds, cleanedLegacy };
+};
+
+/** このアプリの形式（プレフィックスで始まる終日予定）の予定を探す。読むだけ。calendarId を省くと全カレンダー */
+export const findAppEvents = async (prefix: string, calendarId?: string): Promise<AppEventInfo[]> => {
+  if (!prefix.trim()) return [];
+  try {
+    const { events } = await DeviceCalendar.findAppEvents({ prefix, calendarId });
+    return events.filter((e) => e.allDay);
+  } catch (error) {
+    throw toCalendarError(error, '予定の検索');
+  }
+};
+
+/** 利用者が確認した予定だけを削除する */
+export const deleteAppEvents = async (eventIds: string[]): Promise<{ deleted: number; errors: string[] }> => {
+  try {
+    return await DeviceCalendar.deleteEvents({ eventIds });
+  } catch (error) {
+    throw toCalendarError(error, '予定の削除');
+  }
 };

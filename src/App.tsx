@@ -47,6 +47,12 @@ import {
   CALENDAR_PREFIX_STORAGE_KEY,
   CALENDAR_ID_STORAGE_KEY,
   DEFAULT_CALENDAR_PREFIX,
+  eventDateOf,
+  loadExportHistory,
+  findAppEvents,
+  deleteAppEvents,
+  AppEventInfo,
+  ExportHistoryEntry,
 } from './lib/calendar';
 import { errorDetail } from './lib/nativeGoogleAuth';
 import { subscribeToUserTasks, pushUserTasks } from './lib/sync';
@@ -126,8 +132,8 @@ const fmtRangeDate = (d: string) => {
   return `${dt.getMonth() + 1}/${dt.getDate()}(${WEEKDAY_JP[dt.getDay()]})`;
 };
 
-/** 初期表示タブ: Android アプリは「一覧」、Web は「デイリー」 */
-const INITIAL_VIEW: 'list' | 'daily' = Capacitor.isNativePlatform() ? 'list' : 'daily';
+/** 初期表示タブ: Web・Android とも「デイリー」（v0.6.1） */
+const INITIAL_VIEW: 'list' | 'daily' = 'daily';
 
 
 // Automatically extract due date from text and return a clean title with extracted date
@@ -406,6 +412,7 @@ export default function App() {
   const toggleSortDir = () => setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
   const isWide = useMediaQuery('(min-width: 768px)');
   const isXL = useMediaQuery('(min-width: 1280px)');
+  const isUltra = useMediaQuery('(min-width: 2200px)');
 
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator === 'undefined' ? true : navigator.onLine);
@@ -445,6 +452,10 @@ export default function App() {
     }
   });
   const [exportSummary, setExportSummary] = useState<string | null>(null);
+  const [exportHistory, setExportHistory] = useState<ExportHistoryEntry[]>(() => loadExportHistory());
+  const [appEvents, setAppEvents] = useState<AppEventInfo[] | null>(null);
+  const [appEventSelection, setAppEventSelection] = useState<Set<string>>(new Set());
+  const [isSearchingEvents, setIsSearchingEvents] = useState(false);
   // ビルドバージョン（Android はアプリ情報、Web はビルド時に埋め込んだ値）
   const [appVersionLabel, setAppVersionLabel] = useState<string>(`${__APP_VERSION__}（Web ビルド ${__BUILD_COMMIT__}・${__BUILD_TIME__}）`);
   const authUserRef = useRef<User | null>(null);
@@ -855,6 +866,9 @@ export default function App() {
     const calLabel = `${target.displayName}${target.accountName && target.accountName !== target.displayName ? `（${target.accountName}）` : ''}`;
     if (!window.confirm(
       `まだエクスポートしていない完了タスク ${calendarTargets.length} 件を、カレンダー「${calLabel}」に時間指定なしの予定として登録します。\n\n` +
+      calendarTargets.slice(0, 8).map((t) => `・${eventDateOf(t).slice(5).replace('-', '/')} ${t.title}`).join('\n') +
+      (calendarTargets.length > 8 ? `\n…ほか ${calendarTargets.length - 8} 件` : '') + '\n\n' +
+      (target.syncEvents === false ? '⚠ このカレンダーは端末で「同期」がオフのため、Googleカレンダー（クラウド）には反映されません。\n\n' : '') +
       '・予定の日付は「完了日」（未入力なら実施予定日）です。\n' +
       '・登録できたタスクには「カレンダー登録済」の印が付き、以後そのタスクを編集・削除してもカレンダーの予定は変わりません。\n' +
       '・Googleアカウントのカレンダーなら、Googleカレンダー側の同期でクラウドにも反映されます。\n\nよろしいですか？'
@@ -879,10 +893,15 @@ export default function App() {
       const summary = `登録 ${r.created} 件${r.failed ? `（失敗 ${r.failed} 件）` : ''}${
         outcome.cleanedLegacy ? `・以前の版で登録済みの予定 ${outcome.cleanedLegacy} 件を引き継ぎ` : ''}`;
       setExportSummary(summary);
+      setExportHistory(loadExportHistory());
+      const where = outcome.calendar
+        ? `登録先: ${outcome.calendar.displayName || ''}（${outcome.calendar.accountName || ''}）`
+        : `登録先: ${calLabel}`;
+      const dates = (outcome.history?.items || []).filter((i) => i.ok).map((i) => `・${i.date.slice(5).replace('-', '/')} ${i.title}`).slice(0, 8).join('\n');
       if (r.failed) {
         setErrorDialog({ title: 'エクスポートの一部が失敗しました', message: summary, detail: (r.errors || []).join('\n') });
       } else {
-        alert(`カレンダー「${target.displayName}」へのエクスポートが完了しました。\n${summary}`);
+        alert(`エクスポートが完了しました。\n${summary}\n${where}\n${dates}\n\n予定は「完了日」の日付に入っています。`);
       }
     } catch (error: unknown) {
       if (error instanceof CalendarError && error.code === 'PERMISSION_DENIED') {
@@ -894,6 +913,51 @@ export default function App() {
       }
     } finally {
       setIsExporting(false);
+    }
+  };
+
+  /** このアプリの形式の予定を全カレンダーから探す（読むだけ） */
+  const handleFindAppEvents = async () => {
+    if (!calendarPrefix.trim()) {
+      alert('プレフィックスが空のため、このアプリの予定を見分けられません。プレフィックスを入力してから探してください。');
+      return;
+    }
+    if (calendarPermission !== 'granted') {
+      const list = await loadDeviceCalendars(true);
+      if (!list) return;
+    }
+    setIsSearchingEvents(true);
+    try {
+      const events = await findAppEvents(calendarPrefix);
+      setAppEvents(events);
+      setAppEventSelection(new Set());
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : '予定の検索に失敗しました。';
+      const detail = error instanceof CalendarError ? error.detail : errorDetail(error);
+      setErrorDialog({ title: '予定の検索エラー', message, detail });
+    } finally {
+      setIsSearchingEvents(false);
+    }
+  };
+
+  /** 一覧で選んだ予定だけを、確認のうえ削除する */
+  const handleDeleteSelectedAppEvents = async () => {
+    if (!appEvents || appEventSelection.size === 0) return;
+    const chosen = appEvents.filter((e) => appEventSelection.has(e.eventId));
+    const listText = chosen.slice(0, 15).map((e) => `・${e.date} ${e.title}（${e.calendarName}）`).join('\n');
+    if (!window.confirm(`次の ${chosen.length} 件の予定をカレンダーから削除します。元に戻せません。\n\n${listText}${chosen.length > 15 ? `\n…ほか ${chosen.length - 15} 件` : ''}\n\nよろしいですか？`)) return;
+    setIsSearchingEvents(true);
+    try {
+      const res = await deleteAppEvents(chosen.map((e) => e.eventId));
+      alert(`${res.deleted} 件の予定を削除しました。${res.errors.length ? `\n失敗: ${res.errors.join(', ')}` : ''}\nタスク側の「カレンダー登録済」の印はそのままです。`);
+      setAppEvents(await findAppEvents(calendarPrefix));
+      setAppEventSelection(new Set());
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : '予定の削除に失敗しました。';
+      const detail = error instanceof CalendarError ? error.detail : errorDetail(error);
+      setErrorDialog({ title: '予定の削除エラー', message, detail });
+    } finally {
+      setIsSearchingEvents(false);
     }
   };
 
@@ -1135,12 +1199,10 @@ export default function App() {
     updateTasksState(tasks.map((t) => (t.id === taskId ? { ...t, dueDate: date, reminderNotified: false, updatedAt: now } : t)));
   };
 
-  const handleSetPriority = (taskId: string, letter: PriorityLetter, number: number | null, changed: 'letter' | 'number') => {
+  const handleSetPriority = (taskId: string, letter: PriorityLetter, number: number | null) => {
     const target = tasks.find((t) => t.id === taskId);
     if (!target) return;
-    let num = number;
-    // 重要度だけ選んで緊急度が空なら、その重要度の次の番号を自動で付ける（簡易登録と同じ）
-    if (changed === 'letter' && letter && num === null) num = getNextPriorityNumber(letter);
+    const num = number;
     if (target.priorityLetter === letter && target.priorityNumber === num) return;
     const now = new Date().toISOString();
     updateTasksState(tasks.map((t) => (
@@ -1392,7 +1454,7 @@ export default function App() {
               </div>
 
               {isWide && <TaskRowHeader sortDir={sortDir} onToggleSort={toggleSortDir} />}
-              <div className={`${isWide ? 'divide-y divide-zinc-100 dark:divide-zinc-800/60 md:flex-1 md:min-h-0 md:overflow-y-auto' : 'flex flex-col gap-1.5'}`} id="list-rows">
+              <div className="divide-y divide-zinc-100 dark:divide-zinc-800/60 md:flex-1 md:min-h-0 md:overflow-y-auto" id="list-rows">
                 {sortedTasks.length === 0 ? (
                   <div className="py-12 text-center text-xs text-zinc-400 dark:text-zinc-500">
                     <Inbox className="w-8 h-8 text-zinc-300 dark:text-zinc-700 mx-auto mb-2" />
@@ -1403,10 +1465,10 @@ export default function App() {
                     <TaskRow
                       key={task.id}
                       task={task}
-                      layout={isWide ? 'row' : 'stack'}
+                      dateMode={isWide ? 'full' : 'short'}
+                      showNotes={isWide}
                       todayStr={todayStr}
                       handlers={rowHandlers}
-                      longDate={isWide}
                     />
                   ))
                 )}
@@ -1460,7 +1522,7 @@ export default function App() {
                           </button>
                         </div>
                       </div>
-                      <div className="flex-1 min-h-0 overflow-y-auto p-1.5 flex flex-col gap-1 bg-white/70 dark:bg-zinc-950/40 rounded-b-2xl">
+                      <div className="flex-1 min-h-0 overflow-y-auto p-1 flex flex-col divide-y divide-zinc-100 dark:divide-zinc-800/60 bg-white/80 dark:bg-zinc-950/40 rounded-b-2xl">
                         {qTasks.length === 0 ? (
                           <div className="text-[0.8125rem] text-zinc-400 italic text-center py-6">ここへドロップできます</div>
                         ) : (
@@ -1468,7 +1530,7 @@ export default function App() {
                             <TaskRow
                               key={t.id}
                               task={t}
-                              layout={isXL ? 'row' : 'stack'}
+                              dateMode={isXL ? 'short' : 'icon'}
                               todayStr={todayStr}
                               handlers={rowHandlers}
                               dragProps={drag.bind(t.id, t.title)}
@@ -1528,7 +1590,7 @@ export default function App() {
                       </button>
                     )}
                   </div>
-                  <div className="flex flex-col gap-1.5">
+                  <div className="flex flex-col divide-y divide-zinc-100 dark:divide-zinc-800/60">
                     {(() => {
                       const list = sortTaskList(
                         statusFilteredTasks.filter((t) => !selectedQuadrant || getTaskQuadrant(t.priorityLetter, t.priorityNumber) === selectedQuadrant)
@@ -1545,7 +1607,7 @@ export default function App() {
                         <TaskRow
                           key={t.id}
                           task={t}
-                          layout="stack"
+                          dateMode="short"
                           todayStr={todayStr}
                           handlers={rowHandlers}
                           dragProps={drag.bind(t.id, t.title)}
@@ -1649,7 +1711,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-7 gap-2 md:flex-1 md:min-h-[24rem]" id="weekly-days-grid">
+            <div className={`grid grid-cols-1 gap-2 md:flex-1 md:min-h-[24rem] ${isUltra ? 'md:grid-cols-7 md:grid-rows-1' : 'md:grid-cols-4 md:grid-rows-2'}`} id="weekly-days-grid">
               {weekDays.map((dateStr) => {
                 const isToday = dateStr === todayStr;
                 const jpDay = getJPDayOfWeek(dateStr);
@@ -1698,7 +1760,7 @@ export default function App() {
                       )}
                     </div>
 
-                    <div className="flex-1 md:min-h-0 flex flex-col gap-1.5 md:overflow-y-auto">
+                    <div className="flex-1 md:min-h-0 flex flex-col divide-y divide-zinc-100 dark:divide-zinc-800/60 md:overflow-y-auto">
                       {dayTasks.length === 0 ? (
                         <div className="text-[0.8125rem] text-zinc-400/80 dark:text-zinc-600 italic text-center py-3 md:py-6">
                           {isOver ? 'ここへ移動' : '予定なし'}
@@ -1708,7 +1770,7 @@ export default function App() {
                           <TaskRow
                             key={t.id}
                             task={t}
-                            layout="stack"
+                            dateMode="short"
                             todayStr={todayStr}
                             handlers={rowHandlers}
                             dragProps={drag.bind(t.id, t.title)}
@@ -1891,7 +1953,7 @@ export default function App() {
                     >
                       {deviceCalendars.map((c) => (
                         <option key={c.id} value={c.id}>
-                          {c.displayName}{c.accountName && c.accountName !== c.displayName ? `（${c.accountName}）` : ''}{c.isPrimary ? ' ★' : ''}
+                          {c.displayName}{c.accountName && c.accountName !== c.displayName ? `（${c.accountName}）` : ''}{c.isPrimary ? ' ★' : ''}{c.syncEvents === false ? '（同期オフ）' : ''}{c.visible === false ? '（非表示）' : ''}
                         </option>
                       ))}
                     </select>
@@ -1953,6 +2015,97 @@ export default function App() {
                     前回の結果: {exportSummary}
                   </div>
                 )}
+
+                {/* エクスポート履歴（どのカレンダーの何日に入れたか） */}
+                <details className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-2" id="calendar-export-history">
+                  <summary className="text-xs font-bold text-zinc-600 dark:text-zinc-300 cursor-pointer">エクスポート履歴（直近5回）</summary>
+                  {exportHistory.length === 0 ? (
+                    <div className="mt-2 text-[0.8125rem] text-zinc-500">まだ記録はありません（v0.6.1 以降のエクスポートから記録します）。</div>
+                  ) : (
+                    <ul className="mt-2 flex flex-col gap-2">
+                      {exportHistory.map((h) => (
+                        <li key={h.at} className="text-[0.8125rem] text-zinc-600 dark:text-zinc-300">
+                          <div className="font-bold">
+                            {new Date(h.at).toLocaleString('ja-JP')}・登録 {h.created} 件{h.failed ? `・失敗 ${h.failed} 件` : ''}
+                          </div>
+                          <div>カレンダー: {h.calendar.displayName || h.calendar.id}{h.calendar.accountName ? `（${h.calendar.accountName}）` : ''}{h.calendar.syncEvents === false ? '・同期オフ' : ''}{h.calendar.visible === false ? '・非表示' : ''}</div>
+                          <ul className="pl-3">
+                            {h.items.map((it, i) => (
+                              <li key={i} className={it.ok ? '' : 'text-amber-700 dark:text-amber-400'}>
+                                {it.ok ? '✓' : '⚠'} {it.date} {it.title}{it.note ? `（${it.note}）` : ''}
+                              </li>
+                            ))}
+                          </ul>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </details>
+
+                {/* このアプリが登録した予定を探す・選んで削除（自動では何も消さない） */}
+                <div className="rounded-lg border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 px-3 py-2 flex flex-col gap-2" id="calendar-app-events">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleFindAppEvents()}
+                      disabled={isSearchingEvents}
+                      className="px-3 py-1.5 border border-zinc-300 dark:border-zinc-700 rounded-lg text-xs font-bold text-zinc-700 dark:text-zinc-200 disabled:opacity-60"
+                      id="btn-find-app-events"
+                    >
+                      {isSearchingEvents ? '確認中…' : 'このアプリが登録した予定を探す'}
+                    </button>
+                    <span className="text-[0.75rem] text-zinc-500">すべてのカレンダーから、予定名が「{calendarPrefix || '（プレフィックス）'}」で始まる終日予定を探します（見るだけ）</span>
+                  </div>
+                  {appEvents && (
+                    appEvents.length === 0 ? (
+                      <div className="text-[0.8125rem] text-zinc-500">見つかりませんでした。</div>
+                    ) : (
+                      <>
+                        <ul className="flex flex-col gap-1 max-h-72 overflow-y-auto">
+                          {appEvents.map((e) => (
+                            <li key={e.eventId} className="flex items-start gap-2 text-[0.8125rem]">
+                              <input
+                                type="checkbox"
+                                className="mt-1"
+                                checked={appEventSelection.has(e.eventId)}
+                                onChange={(ev) => {
+                                  const next = new Set(appEventSelection);
+                                  if (ev.target.checked) next.add(e.eventId);
+                                  else next.delete(e.eventId);
+                                  setAppEventSelection(next);
+                                }}
+                              />
+                              <span className="min-w-0">
+                                <span className="font-bold">{e.date}</span> {e.title}
+                                <span className="block text-[0.75rem] text-zinc-500">
+                                  {e.calendarName}（{e.accountName}）・{e.synced ? (e.dirty ? '変更をGoogleへ送信待ち' : 'Googleと同期済み') : 'まだGoogleに送られていない'}
+                                </span>
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setAppEventSelection(new Set(appEvents.map((e) => e.eventId)))}
+                            className="px-2 py-1 text-[0.75rem] font-bold border border-zinc-300 dark:border-zinc-700 rounded-lg"
+                          >
+                            すべて選ぶ
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteSelectedAppEvents()}
+                            disabled={appEventSelection.size === 0 || isSearchingEvents}
+                            className="px-3 py-1 text-[0.75rem] font-bold rounded-lg bg-red-600 text-white disabled:opacity-40"
+                            id="btn-delete-app-events"
+                          >
+                            選んだ {appEventSelection.size} 件を削除
+                          </button>
+                        </div>
+                      </>
+                    )
+                  )}
+                </div>
               </div>
               )}
             </div>
@@ -2228,7 +2381,7 @@ export default function App() {
       {/* ドラッグ中の表示と、変更結果の通知 */}
       <DragGhost visual={drag.visual} />
       {toast && (
-        <div className="fixed left-1/2 -translate-x-1/2 bottom-40 lg:bottom-28 z-[150] px-4 py-2.5 rounded-xl bg-zinc-900/95 text-white dark:bg-zinc-100 dark:text-zinc-900 text-sm font-bold shadow-xl max-w-[92vw]" id="app-toast" role="status">
+        <div className="pointer-events-none fixed left-1/2 -translate-x-1/2 bottom-40 lg:bottom-28 z-[150] px-4 py-2.5 rounded-xl bg-zinc-900/95 text-white dark:bg-zinc-100 dark:text-zinc-900 text-sm font-bold shadow-xl max-w-[92vw]" id="app-toast" role="status">
           {toast}
         </div>
       )}

@@ -46,20 +46,20 @@ export const compareTasks = (a: Task, b: Task, dir: SortDir): number => {
   return (a.title || '').localeCompare(b.title || '');
 };
 
-const STATUS_STYLE: Record<TaskStatus, string> = {
-  pending: 'bg-white dark:bg-zinc-900 text-zinc-600 dark:text-zinc-300 border-zinc-300 dark:border-zinc-700',
-  in_progress: 'bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-800',
-  completed: 'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800',
-  postponed: 'bg-sky-50 dark:bg-sky-950/30 text-sky-700 dark:text-sky-300 border-sky-300 dark:border-sky-800',
-  delegated: 'bg-indigo-50 dark:bg-indigo-950/30 text-indigo-700 dark:text-indigo-300 border-indigo-300 dark:border-indigo-800',
-  deleted: 'bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300 border-red-300 dark:border-red-800',
+/** 以前の版と同じ見た目: 達成状況の記号ボックス */
+const STATUS_BOX: Record<TaskStatus, { symbol: string; label: string; cls: string }> = {
+  pending: { symbol: '', label: '未達成', cls: 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 border-zinc-300 dark:border-zinc-700' },
+  in_progress: { symbol: '・', label: '進行中', cls: 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30' },
+  completed: { symbol: '✓', label: '完了', cls: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/30' },
+  postponed: { symbol: '→', label: '先送り', cls: 'bg-sky-500/10 text-sky-600 dark:text-sky-400 border-sky-500/30' },
+  delegated: { symbol: '○', label: '委任', cls: 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/30' },
+  deleted: { symbol: '×', label: '削除', cls: 'bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/30' },
 };
 
-const LETTER_STYLE: Record<string, string> = {
-  A: 'bg-red-500 text-white border-red-500',
-  B: 'bg-emerald-500 text-white border-emerald-500',
-  C: 'bg-zinc-500 text-white border-zinc-500',
-  '': 'bg-white dark:bg-zinc-900 text-zinc-400 border-zinc-300 dark:border-zinc-700',
+const LETTER_BADGE: Record<string, string> = {
+  A: 'bg-red-500 text-white',
+  B: 'bg-emerald-500 text-white',
+  C: 'bg-zinc-500 text-white',
 };
 
 const fmtShortDate = (d: string) => (d ? `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}` : '日付');
@@ -69,13 +69,13 @@ export function DueDateButton({
   value,
   todayStr,
   onChange,
-  long = false,
+  mode = 'short',
   className = '',
 }: {
   value: string;
   todayStr: string;
   onChange: (date: string) => void;
-  long?: boolean;
+  mode?: 'full' | 'short' | 'icon';
   className?: string;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -95,20 +95,20 @@ export function DueDateButton({
     input.click();
   };
   const isToday = value && value === todayStr;
-  const label = isToday ? '今日' : long ? value || '日付なし' : fmtShortDate(value);
+  const label = isToday ? '今日' : mode === 'full' ? value || '日付なし' : fmtShortDate(value);
   return (
     <span className={`relative inline-flex ${className}`} data-nodrag>
       <button
         type="button"
         onClick={open}
-        className={`inline-flex items-center gap-1 h-8 px-1.5 rounded-lg border border-dashed text-[0.8125rem] font-bold whitespace-nowrap hover:border-solid hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer ${
+        className={`inline-flex items-center gap-1 h-7 px-1 rounded-md border border-dashed text-[0.8125rem] font-bold whitespace-nowrap hover:border-solid hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors cursor-pointer ${
           isToday ? 'border-zinc-900 dark:border-zinc-100 text-zinc-900 dark:text-zinc-100' : 'border-zinc-300 dark:border-zinc-700 text-zinc-500 dark:text-zinc-400'
         }`}
         title="クリックして日付を変更"
         aria-label={`日付 ${value || 'なし'}（クリックで変更）`}
       >
         <CalendarDays className="w-3.5 h-3.5 flex-none" />
-        <span>{label}</span>
+        {mode !== 'icon' && <span>{label}</span>}
       </button>
       <input
         ref={inputRef}
@@ -125,67 +125,91 @@ export function DueDateButton({
   );
 }
 
-export function StatusSelect({ status, onChange, compact = false }: { status: TaskStatus; onChange: (s: TaskStatus) => void; compact?: boolean }) {
+/**
+ * 達成状況: 記号ボックス（✓ ・ → ○ × 空欄）。押すと端末／ブラウザ標準の選択リストが開く。
+ * 透明な <select> をボックスの上に重ねているので、Android ではネイティブの選択ダイアログになる。
+ */
+export function StatusSelect({ status, onChange }: { status: TaskStatus; onChange: (s: TaskStatus) => void }) {
+  const info = STATUS_BOX[status || 'pending'];
   return (
-    <select
-      value={status || 'pending'}
-      onChange={(e) => onChange(e.target.value as TaskStatus)}
-      onClick={(e) => e.stopPropagation()}
-      className={`mini-select h-8 rounded-lg border text-[0.8125rem] font-bold cursor-pointer ${compact ? 'w-[4.9rem]' : 'w-[5.2rem]'} ${STATUS_STYLE[status || 'pending']}`}
-      title="達成状況を変更"
-      aria-label="達成状況"
-    >
-      <option value="pending">未達成</option>
-      <option value="in_progress">・進行中</option>
-      <option value="completed">✓完了</option>
-      <option value="postponed">→先送り</option>
-      <option value="delegated">○委任</option>
-      <option value="deleted">×削除</option>
-    </select>
+    <span className="relative inline-flex flex-none w-7 h-7" data-nodrag>
+      <span className={`inline-flex items-center justify-center w-7 h-7 rounded-lg border text-xs font-black ${info.cls}`} aria-hidden="true">
+        {info.symbol || <span className="w-3.5 h-3.5 rounded-full border border-zinc-300 dark:border-zinc-600" />}
+      </span>
+      <select
+        value={status || 'pending'}
+        onChange={(e) => onChange(e.target.value as TaskStatus)}
+        onClick={(e) => e.stopPropagation()}
+        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+        title={`達成状況を変更（${info.label}）`}
+        aria-label={`達成状況: ${info.label}`}
+      >
+        <option value="pending">未達成</option>
+        <option value="in_progress">進行中 (・)</option>
+        <option value="completed">完了 (✓)</option>
+        <option value="postponed">先送り (→)</option>
+        <option value="delegated">委任 (○)</option>
+        <option value="deleted">削除 (×)</option>
+      </select>
+    </span>
   );
 }
 
-export function PrioritySelects({
+/**
+ * 重要度・緊急度: 「B1」のような色付きバッジ。押すと A1〜／B1〜／C1〜 をまとめた選択リストが開く（以前の版と同じ）。
+ */
+export function PriorityBadgeSelect({
   letter,
   number,
   onChange,
 }: {
   letter: PriorityLetter;
   number: number | null;
-  onChange: (letter: PriorityLetter, number: number | null, changed: 'letter' | 'number') => void;
+  onChange: (letter: PriorityLetter, number: number | null) => void;
 }) {
-  const maxNum = Math.max(20, (number || 0) + 5);
+  const value = letter ? `${letter}${number ?? ''}` : number !== null ? `-${number}` : '';
+  const maxNum = Math.max(10, (number || 0));
+  const nums = Array.from({ length: maxNum }, (_, i) => i + 1);
+  const label = letter ? `${letter}${number ?? ''}` : number !== null ? `${number}` : '-';
   return (
-    <>
-      <select
-        value={letter}
-        onChange={(e) => onChange(e.target.value as PriorityLetter, number, 'letter')}
-        onClick={(e) => e.stopPropagation()}
-        className={`mini-select h-8 w-[2.6rem] rounded-lg border text-[0.875rem] font-black cursor-pointer ${LETTER_STYLE[letter || '']}`}
-        title="重要度を変更"
-        aria-label="重要度"
-      >
-        <option value="">-</option>
-        <option value="A">A</option>
-        <option value="B">B</option>
-        <option value="C">C</option>
-      </select>
-      <select
-        value={number === null ? '' : String(number)}
-        onChange={(e) => onChange(letter, e.target.value === '' ? null : parseInt(e.target.value, 10), 'number')}
-        onClick={(e) => e.stopPropagation()}
-        className={`mini-select h-8 w-[2.9rem] rounded-lg border text-[0.875rem] font-black cursor-pointer ${
-          number === null ? 'bg-white dark:bg-zinc-900 text-zinc-400 border-zinc-300 dark:border-zinc-700' : 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 border-zinc-400 dark:border-zinc-500'
+    <span className="relative inline-flex flex-none" data-nodrag>
+      <span
+        className={`inline-flex items-center justify-center min-w-[2.4rem] h-7 px-1.5 rounded-md text-[0.8125rem] font-black tracking-wide ${
+          letter ? LETTER_BADGE[letter] : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 border border-zinc-300 dark:border-zinc-700'
         }`}
-        title="緊急度を変更"
-        aria-label="緊急度"
+        aria-hidden="true"
       >
-        <option value="">-</option>
-        {Array.from({ length: maxNum }, (_, i) => i + 1).map((n) => (
-          <option key={n} value={n}>{n}</option>
+        {label}
+      </span>
+      <select
+        value={value}
+        onChange={(e) => {
+          const v = e.target.value;
+          if (!v) onChange('', null);
+          else if (v.startsWith('-')) onChange('', parseInt(v.slice(1), 10));
+          else onChange(v.charAt(0) as PriorityLetter, v.length > 1 ? parseInt(v.slice(1), 10) : null);
+        }}
+        onClick={(e) => e.stopPropagation()}
+        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+        title="重要度・緊急度を変更"
+        aria-label={`重要度・緊急度: ${label}`}
+      >
+        <option value="">なし</option>
+        {(['A', 'B', 'C'] as const).map((L) => (
+          <optgroup key={L} label={L === 'A' ? 'A (最重要)' : L === 'B' ? 'B (重要)' : 'C (重要ではない)'}>
+            {letter === L && number === null && <option value={L}>{L}</option>}
+            {nums.map((n) => (
+              <option key={`${L}${n}`} value={`${L}${n}`}>{`${L}${n}`}</option>
+            ))}
+          </optgroup>
         ))}
+        {!letter && number !== null && (
+          <optgroup label="重要度なし">
+            <option value={`-${number}`}>{number}</option>
+          </optgroup>
+        )}
       </select>
-    </>
+    </span>
   );
 }
 
@@ -241,118 +265,83 @@ export function StatusFilterSelect({ value, onChange, className = '' }: { value:
 
 export interface TaskRowHandlers {
   onStatus: (taskId: string, status: TaskStatus) => void;
-  onPriority: (taskId: string, letter: PriorityLetter, number: number | null, changed: 'letter' | 'number') => void;
+  onPriority: (taskId: string, letter: PriorityLetter, number: number | null) => void;
   onDate: (taskId: string, date: string) => void;
   onOpen: (taskId: string) => void;
 }
 
-/** 一覧の行と同じ列幅（ヘッダーと揃える） */
-export const ROW_GRID = 'grid grid-cols-[5.2rem_5.75rem_minmax(0,1fr)_7.6rem] items-center gap-x-2';
+export type DateMode = 'full' | 'short' | 'icon';
 
+/** 一行表示の列: 達成状況 | 優先度 | タスク内容（長いときだけ折り返し） | 期日 */
+export const rowGrid = (mode: DateMode) =>
+  `grid ${mode === 'full' ? 'grid-cols-[1.75rem_auto_minmax(0,1fr)_7.6rem]' : mode === 'short' ? 'grid-cols-[1.75rem_auto_minmax(0,1fr)_auto]' : 'grid-cols-[1.75rem_auto_minmax(0,1fr)_auto]'} items-center gap-x-1.5 sm:gap-x-2`;
+
+/** すべてのタブで共通の「一行」タスク表示 */
 export function TaskRow({
   task,
-  layout,
   todayStr,
   handlers,
+  dateMode = 'short',
   dragProps,
   isDragging = false,
-  longDate = false,
+  showNotes = false,
 }: {
   task: Task;
-  layout: 'row' | 'stack';
   todayStr: string;
   handlers: TaskRowHandlers;
+  dateMode?: DateMode;
   dragProps?: Record<string, unknown>;
   isDragging?: boolean;
-  longDate?: boolean;
+  showNotes?: boolean;
 }) {
   const isCompleted = task.status === 'completed';
   const isDeleted = task.status === 'deleted';
-  const title = (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        handlers.onOpen(task.id);
-      }}
-      className={`min-w-0 w-full text-left font-bold text-[0.875rem] leading-snug break-words hover:underline cursor-pointer text-zinc-800 dark:text-zinc-100 ${
-        isCompleted ? 'line-through text-zinc-400 dark:text-zinc-500' : ''
-      } ${isDeleted ? 'line-through text-red-500' : ''}`}
-      title="タップで詳細を開く"
-    >
-      <span className={layout === 'stack' ? 'line-clamp-3' : 'line-clamp-2'}>{task.title}</span>
-      {layout === 'row' && task.notes && (
-        <span className="block text-[0.8125rem] font-medium text-zinc-400 dark:text-zinc-500 truncate no-underline">{task.notes}</span>
-      )}
-      {(task.reminderEnabled && task.reminderTime) || task.calendarExported ? (
-        <span className="flex items-center gap-2 text-[0.75rem] font-bold mt-0.5">
-          {task.reminderEnabled && task.reminderTime && (
-            <span className="inline-flex items-center gap-0.5 text-sky-500"><Bell className="w-3 h-3" />{task.reminderTime}</span>
-          )}
-          {task.calendarExported && (
-            <span className="inline-flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400"><CalendarCheck className="w-3 h-3" />登録済</span>
-          )}
-        </span>
-      ) : null}
-    </button>
-  );
-
-  const statusSel = <StatusSelect status={task.status} compact={layout === 'stack'} onChange={(s) => handlers.onStatus(task.id, s)} />;
-  const prio = (
-    <span className="inline-flex gap-1">
-      <PrioritySelects
-        letter={task.priorityLetter}
-        number={task.priorityNumber}
-        onChange={(l, n, c) => handlers.onPriority(task.id, l, n, c)}
-      />
-    </span>
-  );
-  const date = <DueDateButton value={task.dueDate} todayStr={todayStr} long={longDate} onChange={(d) => handlers.onDate(task.id, d)} />;
-
-  const base = `select-none rounded-lg transition-all ${isDragging ? 'opacity-40 ring-2 ring-sky-400' : ''} ${
-    isCompleted ? 'opacity-70' : ''
-  } ${isDeleted ? 'opacity-50' : ''}`;
-  const style: React.CSSProperties = { WebkitTouchCallout: 'none' };
-
-  if (layout === 'stack') {
-    return (
-      <div
-        {...dragProps}
-        style={style}
-        className={`${base} p-1.5 border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950/60 hover:border-zinc-400 dark:hover:border-zinc-600 flex flex-col gap-1 ${dragProps ? 'cursor-grab active:cursor-grabbing' : ''}`}
-        id={`task-card-${task.id}`}
-      >
-        <div className="flex items-center gap-1 flex-wrap">
-          {statusSel}
-          {prio}
-          <span className="ml-auto">{date}</span>
-        </div>
-        {title}
-      </div>
-    );
-  }
-
   return (
     <div
       {...dragProps}
-      style={style}
-      className={`${base} ${ROW_GRID} px-2 py-1.5 hover:bg-zinc-50 dark:hover:bg-zinc-800/30 ${dragProps ? 'cursor-grab active:cursor-grabbing' : ''}`}
+      style={{ WebkitTouchCallout: 'none' }}
+      className={`${rowGrid(dateMode)} select-none px-1.5 py-1 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors ${
+        dragProps ? 'cursor-grab active:cursor-grabbing' : ''
+      } ${isDragging ? 'opacity-40 ring-2 ring-sky-400' : ''} ${isCompleted ? 'opacity-65' : ''} ${isDeleted ? 'opacity-50' : ''}`}
       id={`task-row-${task.id}`}
     >
-      {statusSel}
-      {prio}
-      {title}
-      <span className="flex justify-end">{date}</span>
+      <StatusSelect status={task.status} onChange={(s) => handlers.onStatus(task.id, s)} />
+      <PriorityBadgeSelect letter={task.priorityLetter} number={task.priorityNumber} onChange={(l, n) => handlers.onPriority(task.id, l, n)} />
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          handlers.onOpen(task.id);
+        }}
+        className={`min-w-0 text-left text-[0.875rem] font-semibold leading-snug break-words hover:underline cursor-pointer text-zinc-800 dark:text-zinc-100 ${
+          isCompleted ? 'line-through text-zinc-400 dark:text-zinc-500' : ''
+        } ${isDeleted ? 'line-through text-red-500' : ''}`}
+        title="タップで詳細を開く"
+      >
+        {task.title}
+        {task.reminderEnabled && task.reminderTime && (
+          <span className="ml-1 inline-flex items-center gap-0.5 text-[0.75rem] font-bold text-sky-500 align-middle"><Bell className="w-3 h-3" />{task.reminderTime}</span>
+        )}
+        {task.calendarExported && (
+          <CalendarCheck className="ml-1 inline w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 align-middle" aria-label="カレンダー登録済" />
+        )}
+        {showNotes && task.notes && (
+          <span className="block text-[0.8125rem] font-medium text-zinc-400 dark:text-zinc-500 truncate">{task.notes}</span>
+        )}
+      </button>
+      <span className="flex justify-end">
+        <DueDateButton value={task.dueDate} todayStr={todayStr} mode={dateMode} onChange={(d) => handlers.onDate(task.id, d)} />
+      </span>
     </div>
   );
 }
 
-/** 行レイアウトのヘッダー */
+/** 一覧（PC）の表ヘッダー */
 export function TaskRowHeader({ sortDir, onToggleSort }: { sortDir: SortDir; onToggleSort: () => void }) {
   return (
-    <div className={`${ROW_GRID} px-2 py-1.5 bg-zinc-50 dark:bg-zinc-800/30 border-b border-zinc-200 dark:border-zinc-800 text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 rounded-t-lg`}>
-      <span className="text-center">達成状況</span>
-      <span className="text-center">重要度・緊急度</span>
+    <div className={`${rowGrid('full')} px-1.5 py-1.5 bg-zinc-50 dark:bg-zinc-800/30 border-b border-zinc-200 dark:border-zinc-800 text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 rounded-t-lg`}>
+      <span className="text-center leading-tight text-[0.75rem]">状況</span>
+      <span className="text-center min-w-[2.4rem]">優先度</span>
       <span>タスク内容（タップで詳細）</span>
       <span className="text-right pr-1"><SortHeader dir={sortDir} onToggle={onToggleSort} /></span>
     </div>

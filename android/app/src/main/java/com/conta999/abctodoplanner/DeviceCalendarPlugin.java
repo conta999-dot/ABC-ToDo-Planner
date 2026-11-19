@@ -1,6 +1,8 @@
 package com.conta999.abctodoplanner;
 
 import android.Manifest;
+import android.accounts.Account;
+import android.os.Bundle;
 import android.content.ContentResolver;
 import android.content.ContentUris;
 import android.content.ContentValues;
@@ -88,6 +90,8 @@ public class DeviceCalendarPlugin extends Plugin {
                 CalendarContract.Calendars.IS_PRIMARY,
                 CalendarContract.Calendars.CALENDAR_COLOR,
                 CalendarContract.Calendars.VISIBLE,
+                CalendarContract.Calendars.SYNC_EVENTS,
+                CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL,
             };
             String selection = CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL + " >= ?";
             String[] args = new String[] { String.valueOf(CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR) };
@@ -109,6 +113,8 @@ public class DeviceCalendarPlugin extends Plugin {
                         o.put("isPrimary", primary);
                         o.put("color", c.isNull(6) ? null : String.format("#%06X", 0xFFFFFF & c.getInt(6)));
                         o.put("visible", c.isNull(7) || c.getInt(7) == 1);
+                        o.put("syncEvents", c.isNull(8) || c.getInt(8) == 1);
+                        o.put("accessLevel", c.isNull(9) ? 0 : c.getInt(9));
                         list.put(o);
                     }
                 }
@@ -190,7 +196,13 @@ public class DeviceCalendarPlugin extends Plugin {
                     v.put(CalendarContract.Events.CALENDAR_ID, calendarId);
                     Uri inserted = cr.insert(CalendarContract.Events.CONTENT_URI, v);
                     if (inserted == null) throw new IllegalStateException("insert returned null");
+                    long newId = ContentUris.parseId(inserted);
+                    // 登録した行を読み戻して、正しく入ったか確認する
+                    JSObject check = readBack(cr, newId);
+                    if (check == null) throw new IllegalStateException("inserted row not found (id=" + newId + ")");
                     r.put("status", "created");
+                    r.put("eventId", String.valueOf(newId));
+                    r.put("check", check);
                 } catch (SecurityException e) {
                     call.reject("Calendar permission not granted", CODE_PERMISSION, e);
                     return;
@@ -203,6 +215,193 @@ public class DeviceCalendarPlugin extends Plugin {
             }
             JSObject ret = new JSObject();
             ret.put("results", results);
+            ret.put("calendar", calendarInfo(cr, calendarId));
+            // 端末の Google カレンダー同期にすぐアップロードしてもらう（失敗しても無視）
+            requestCalendarSync(cr, calendarId);
+            call.resolve(ret);
+        });
+    }
+
+    /** 予定 1 件を読み戻す（存在しなければ null） */
+    private static JSObject readBack(ContentResolver cr, long eventId) {
+        String[] projection = new String[] {
+            CalendarContract.Events._ID,
+            CalendarContract.Events.CALENDAR_ID,
+            CalendarContract.Events.TITLE,
+            CalendarContract.Events.DTSTART,
+            CalendarContract.Events.DTEND,
+            CalendarContract.Events.ALL_DAY,
+            CalendarContract.Events.EVENT_TIMEZONE,
+            CalendarContract.Events.DELETED,
+        };
+        try (Cursor c = cr.query(ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eventId), projection, null, null, null)) {
+            if (c == null || !c.moveToFirst()) return null;
+            JSObject o = new JSObject();
+            o.put("eventId", String.valueOf(c.getLong(0)));
+            o.put("calendarId", String.valueOf(c.getLong(1)));
+            o.put("title", nz(c.getString(2)));
+            o.put("start", utcDate(c.getLong(3)));
+            o.put("end", c.isNull(4) ? "" : utcDate(c.getLong(4)));
+            o.put("allDay", !c.isNull(5) && c.getInt(5) == 1);
+            o.put("timezone", nz(c.getString(6)));
+            o.put("deleted", !c.isNull(7) && c.getInt(7) == 1);
+            return o;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** UTC ミリ秒 → "YYYY-MM-DD"（終日予定の日付） */
+    private static String utcDate(long ms) {
+        Calendar cal = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
+        cal.setTimeInMillis(ms);
+        return String.format("%04d-%02d-%02d", cal.get(Calendar.YEAR), cal.get(Calendar.MONTH) + 1, cal.get(Calendar.DAY_OF_MONTH));
+    }
+
+    /** カレンダーの名前・アカウント・同期設定 */
+    private static JSObject calendarInfo(ContentResolver cr, long calendarId) {
+        JSObject o = new JSObject();
+        String[] projection = new String[] {
+            CalendarContract.Calendars.CALENDAR_DISPLAY_NAME,
+            CalendarContract.Calendars.ACCOUNT_NAME,
+            CalendarContract.Calendars.ACCOUNT_TYPE,
+            CalendarContract.Calendars.VISIBLE,
+            CalendarContract.Calendars.SYNC_EVENTS,
+        };
+        try (Cursor c = cr.query(ContentUris.withAppendedId(CalendarContract.Calendars.CONTENT_URI, calendarId), projection, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                o.put("id", String.valueOf(calendarId));
+                o.put("displayName", nz(c.getString(0)));
+                o.put("accountName", nz(c.getString(1)));
+                o.put("accountType", nz(c.getString(2)));
+                o.put("visible", c.isNull(3) || c.getInt(3) == 1);
+                o.put("syncEvents", c.isNull(4) || c.getInt(4) == 1);
+            }
+        } catch (Exception ignored) {
+            // ignore
+        }
+        return o;
+    }
+
+    private static void requestCalendarSync(ContentResolver cr, long calendarId) {
+        try {
+            JSObject info = calendarInfo(cr, calendarId);
+            String name = info.optString("accountName", "");
+            String type = info.optString("accountType", "");
+            if (name.isEmpty() || type.isEmpty() || CalendarContract.ACCOUNT_TYPE_LOCAL.equals(type)) return;
+            Bundle extras = new Bundle();
+            extras.putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true);
+            extras.putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true);
+            ContentResolver.requestSync(new Account(name, type), CalendarContract.AUTHORITY, extras);
+        } catch (Exception ignored) {
+            // 同期の依頼に失敗しても、端末の通常の同期で後からアップロードされる
+        }
+    }
+
+    /**
+     * このアプリが登録したと思われる予定を探す（全カレンダー、または指定カレンダー）。
+     * 目印は入れていないので、タイトルの先頭がプレフィックスで始まる予定を返す（判定の絞り込みは JS 側で行う）。
+     * 読むだけで、何も変更しない。
+     * 戻り値 events[]: { eventId, title, date, allDay, calendarId, calendarName, accountName, dirty, synced }
+     */
+    @PluginMethod
+    public void findAppEvents(PluginCall call) {
+        if (!hasCalendarPermission()) {
+            call.reject("Calendar permission not granted", CODE_PERMISSION);
+            return;
+        }
+        final String prefix = call.getString("prefix", "");
+        final String calendarIdStr = call.getString("calendarId", "");
+        if (prefix == null || prefix.trim().isEmpty()) {
+            call.reject("prefix is required", CODE_FAILED);
+            return;
+        }
+        executor.execute(() -> {
+            ContentResolver cr = getContext().getContentResolver();
+            JSArray list = new JSArray();
+            try {
+                StringBuilder sel = new StringBuilder();
+                java.util.ArrayList<String> args = new java.util.ArrayList<>();
+                sel.append(CalendarContract.Events.DELETED).append(" = 0 AND substr(").append(CalendarContract.Events.TITLE).append(", 1, ?) = ?");
+                args.add(String.valueOf(prefix.length()));
+                args.add(prefix);
+                if (calendarIdStr != null && !calendarIdStr.isEmpty()) {
+                    sel.append(" AND ").append(CalendarContract.Events.CALENDAR_ID).append(" = ?");
+                    args.add(calendarIdStr);
+                }
+                String[] projection = new String[] {
+                    CalendarContract.Events._ID,
+                    CalendarContract.Events.TITLE,
+                    CalendarContract.Events.DTSTART,
+                    CalendarContract.Events.ALL_DAY,
+                    CalendarContract.Events.CALENDAR_ID,
+                    CalendarContract.Events.CALENDAR_DISPLAY_NAME,
+                    CalendarContract.Events.ACCOUNT_NAME,
+                    CalendarContract.Events.DIRTY,
+                    CalendarContract.Events._SYNC_ID,
+                };
+                try (Cursor c = cr.query(CalendarContract.Events.CONTENT_URI, projection, sel.toString(), args.toArray(new String[0]),
+                    CalendarContract.Events.DTSTART + " ASC")) {
+                    while (c != null && c.moveToNext()) {
+                        JSObject o = new JSObject();
+                        boolean allDay = !c.isNull(3) && c.getInt(3) == 1;
+                        o.put("eventId", String.valueOf(c.getLong(0)));
+                        o.put("title", nz(c.getString(1)));
+                        o.put("date", allDay ? utcDate(c.getLong(2)) : String.valueOf(c.getLong(2)));
+                        o.put("allDay", allDay);
+                        o.put("calendarId", String.valueOf(c.getLong(4)));
+                        o.put("calendarName", nz(c.getString(5)));
+                        o.put("accountName", nz(c.getString(6)));
+                        o.put("dirty", !c.isNull(7) && c.getInt(7) == 1);
+                        o.put("synced", !c.isNull(8) && !nz(c.getString(8)).isEmpty());
+                        list.put(o);
+                    }
+                }
+                JSObject ret = new JSObject();
+                ret.put("events", list);
+                call.resolve(ret);
+            } catch (SecurityException e) {
+                call.reject("Calendar permission not granted", CODE_PERMISSION, e);
+            } catch (Exception e) {
+                call.reject("予定の検索に失敗しました: " + e.getMessage(), CODE_FAILED, e);
+            }
+        });
+    }
+
+    /**
+     * 利用者が一覧で確認して選んだ予定だけを削除する（自動では呼ばない）。
+     * アプリとして削除するので、Google カレンダーにも削除が同期される。
+     */
+    @PluginMethod
+    public void deleteEvents(PluginCall call) {
+        if (!hasCalendarPermission()) {
+            call.reject("Calendar permission not granted", CODE_PERMISSION);
+            return;
+        }
+        final JSArray ids = call.getArray("eventIds", new JSArray());
+        executor.execute(() -> {
+            ContentResolver cr = getContext().getContentResolver();
+            int deleted = 0;
+            JSArray errors = new JSArray();
+            java.util.HashSet<Long> calendars = new java.util.HashSet<>();
+            for (int i = 0; i < ids.length(); i++) {
+                try {
+                    long id = Long.parseLong(ids.getString(i));
+                    JSObject row = readBack(cr, id);
+                    if (row != null) calendars.add(Long.parseLong(row.getString("calendarId")));
+                    int n = cr.delete(ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, id), null, null);
+                    if (n > 0) deleted += n;
+                } catch (SecurityException e) {
+                    call.reject("Calendar permission not granted", CODE_PERMISSION, e);
+                    return;
+                } catch (Exception e) {
+                    errors.put(e.getClass().getSimpleName() + " " + e.getMessage());
+                }
+            }
+            for (Long cal : calendars) requestCalendarSync(cr, cal);
+            JSObject ret = new JSObject();
+            ret.put("deleted", deleted);
+            ret.put("errors", errors);
             call.resolve(ret);
         });
     }
