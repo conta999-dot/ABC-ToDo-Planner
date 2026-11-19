@@ -7,15 +7,24 @@ import {
   Clock,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
   Settings,
   HelpCircle,
   Sparkles,
   Inbox,
-  X
+  X,
+  Cloud,
+  CloudOff,
+  AlertTriangle,
+  RefreshCw,
+  CalendarPlus,
+  UserRound,
+  LogOut,
+  LogIn,
 } from 'lucide-react';
 
 import { User } from 'firebase/auth';
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, SystemBars, SystemBarsStyle } from '@capacitor/core';
 import { Network } from '@capacitor/network';
 import { App as CapApp } from '@capacitor/app';
 
@@ -24,6 +33,14 @@ import { getLocalTasks, saveLocalTasks } from './lib/db';
 import { startReminderScheduler, stopReminderScheduler, requestNotificationPermission, rescheduleNativeReminders } from './lib/reminder';
 import { getLocalDateString, addDays, newTaskId, parseLocalDate } from './lib/dates';
 import { initAuth, googleSignIn, logout as firebaseLogout } from './lib/firebase';
+import {
+  buildEventTitle,
+  exportableTasks,
+  exportCompletedTasksToCalendar,
+  CalendarError,
+  CALENDAR_PREFIX_STORAGE_KEY,
+  DEFAULT_CALENDAR_PREFIX,
+} from './lib/calendar';
 import { errorDetail } from './lib/nativeGoogleAuth';
 import { subscribeToUserTasks, pushUserTasks } from './lib/sync';
 import { mergeTasks } from './lib/drive';
@@ -191,7 +208,40 @@ const checkAndCreateNextDayCopy = (
 };
 
 
-function SyncStatusChip({
+/** 「2026/11/19 17:45:12」→「11/19 17:45」 */
+const shortSyncTime = (value: string | null): string => {
+  if (!value) return '';
+  const m = value.match(/(\d{1,4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/);
+  return m ? `${m[2]}/${m[3]} ${m[4]}:${m[5]}` : value;
+};
+
+/** 先頭の重要度・緊急度トークン（例: "A3 ", "B ", "5 "）を解析する */
+const parsePriorityPrefix = (text: string): { letter: PriorityLetter; number: number | null; rest: string; matched: boolean; letterOnly: boolean } => {
+  const original = text.trim();
+  const normalized = original.replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  const cut = (len: number) => original.substring(len).replace(/^[\s　]+/, '');
+  const both = normalized.match(/^([A-Ca-c])([0-9]{1,2})/);
+  if (both) {
+    const num = parseInt(both[2], 10);
+    if (num >= 1 && num <= 20) {
+      return { letter: both[1].toUpperCase() as PriorityLetter, number: num, rest: cut(1 + both[2].length), matched: true, letterOnly: false };
+    }
+  }
+  const letter = normalized.match(/^([A-Ca-c])(?:[\s　]+|$)/);
+  if (letter) {
+    return { letter: letter[1].toUpperCase() as PriorityLetter, number: null, rest: cut(1), matched: true, letterOnly: true };
+  }
+  const num = normalized.match(/^([0-9]{1,2})/);
+  if (num) {
+    const n = parseInt(num[1], 10);
+    if (n >= 1 && n <= 20) {
+      return { letter: '', number: n, rest: cut(num[1].length), matched: true, letterOnly: false };
+    }
+  }
+  return { letter: '', number: null, rest: original, matched: false, letterOnly: false };
+};
+
+function HeaderStatus({
   user,
   isOnline,
   lastSyncTime,
@@ -199,7 +249,7 @@ function SyncStatusChip({
   isSyncing,
   isSigningIn,
   onSignIn,
-  onSignOut,
+  onOpenSettings,
   onShowError,
 }: {
   user: User | null;
@@ -209,63 +259,41 @@ function SyncStatusChip({
   isSyncing: boolean;
   isSigningIn: boolean;
   onSignIn: () => void;
-  onSignOut: () => void;
+  onOpenSettings: () => void;
   onShowError: () => void;
 }) {
-  const accountLabel = user?.email || user?.displayName || 'ログイン済み';
-  const statusLine = !isOnline
-    ? 'オフライン'
-    : isSyncing
-      ? '同期中…'
-      : syncError
-        ? (user ? '同期エラー' : 'ログイン失敗')
-        : user
-          ? (lastSyncTime ? `最終同期 ${lastSyncTime}` : 'クラウド同期')
-          : 'この端末のみ';
-
+  if (!user) {
+    return (
+      <button
+        type="button"
+        onClick={onSignIn}
+        disabled={isSigningIn}
+        className="h-9 w-9 flex items-center justify-center rounded-xl bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 hover:opacity-90 disabled:opacity-60 shrink-0"
+        title="Googleでログイン"
+        aria-label="Googleでログイン"
+        id="btn-header-signin"
+      >
+        {isSigningIn ? <RefreshCw className="w-[1.125rem] h-[1.125rem] animate-spin" /> : <LogIn className="w-[1.125rem] h-[1.125rem]" />}
+      </button>
+    );
+  }
+  const hasError = !!syncError && !isSyncing && isOnline;
+  const Icon = !isOnline ? CloudOff : isSyncing ? RefreshCw : hasError ? AlertTriangle : Cloud;
+  const tone = !isOnline || hasError
+    ? 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-500/10 border-amber-200 dark:border-amber-800/50'
+    : 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-500/10 border-emerald-200 dark:border-emerald-800/50';
+  const label = !isOnline ? 'オフライン' : isSyncing ? '同期中' : hasError ? '同期エラー' : lastSyncTime ? '同期済み' : 'クラウド同期';
   return (
-    <div className="flex items-center gap-2 shrink-0" id="sync-status-chip">
-      <div className="text-right leading-tight">
-        <div className="text-[0.8125rem] font-bold text-zinc-700 dark:text-zinc-200 truncate max-w-[46vw] sm:max-w-xs">
-          {user ? accountLabel : '未ログイン'}
-        </div>
-        {syncError && !isSyncing && isOnline ? (
-          <button
-            type="button"
-            onClick={onShowError}
-            className="block ml-auto text-[0.8125rem] font-bold underline decoration-dotted underline-offset-2 truncate max-w-[46vw] sm:max-w-xs text-amber-600 dark:text-amber-400"
-            title={syncError}
-            id="btn-sync-error-detail"
-          >
-            ⚠ {statusLine}
-          </button>
-        ) : (
-          <div className={`text-[0.8125rem] font-semibold truncate max-w-[46vw] sm:max-w-xs ${
-            !isOnline ? 'text-amber-600 dark:text-amber-400' : 'text-zinc-400 dark:text-zinc-500'
-          }`} title={statusLine}>
-            {statusLine}
-          </div>
-        )}
-      </div>
-      {user ? (
-        <button
-          type="button"
-          onClick={onSignOut}
-          className="px-2.5 py-1.5 text-[0.8125rem] font-bold rounded-lg border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800"
-        >
-          ログアウト
-        </button>
-      ) : (
-        <button
-          type="button"
-          onClick={onSignIn}
-          disabled={isSigningIn}
-          className="px-2.5 py-1.5 text-[0.8125rem] font-bold rounded-lg bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 hover:opacity-90 disabled:opacity-60"
-        >
-          {isSigningIn ? '接続中…' : 'ログイン'}
-        </button>
-      )}
-    </div>
+    <button
+      type="button"
+      onClick={hasError ? onShowError : onOpenSettings}
+      className={`h-9 w-9 flex items-center justify-center rounded-xl border shrink-0 ${tone}`}
+      title={label}
+      aria-label={label}
+      id="btn-header-sync-status"
+    >
+      <Icon className={`w-[1.125rem] h-[1.125rem] ${isSyncing ? 'animate-spin' : ''}`} />
+    </button>
   );
 }
 
@@ -310,6 +338,20 @@ export default function App() {
   };
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
+  // Googleカレンダーへのエクスポート
+  const [calendarPrefix, setCalendarPrefix] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem(CALENDAR_PREFIX_STORAGE_KEY);
+      return saved === null ? DEFAULT_CALENDAR_PREFIX : saved;
+    } catch {
+      return DEFAULT_CALENDAR_PREFIX;
+    }
+  });
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportProgress, setExportProgress] = useState<{ done: number; total: number } | null>(null);
+  const [exportSummary, setExportSummary] = useState<string | null>(null);
+  // ビルドバージョン（Android はアプリ情報、Web はビルド時に埋め込んだ値）
+  const [appVersionLabel, setAppVersionLabel] = useState<string>(`${__APP_VERSION__}（Web ビルド ${__BUILD_COMMIT__}・${__BUILD_TIME__}）`);
   const authUserRef = useRef<User | null>(null);
   const applyingRemoteRef = useRef(false);
 
@@ -336,7 +378,7 @@ export default function App() {
     if (Math.abs(diffX) > Math.abs(diffY) && Math.abs(diffX) > 60) {
       if (currentView === 'settings' || currentView === 'detail') return;
 
-      const tabs: ('list' | 'matrix' | 'daily')[] = ['list', 'matrix', 'daily'];
+      const tabs: ('list' | 'matrix' | 'daily')[] = ['daily', 'matrix', 'list'];
       const currentIndex = tabs.indexOf(currentView as any);
 
       if (currentIndex !== -1) {
@@ -381,6 +423,27 @@ export default function App() {
       longPressTimeoutRef.current = null;
     }
   };
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CALENDAR_PREFIX_STORAGE_KEY, calendarPrefix);
+    } catch {
+      // ignore
+    }
+  }, [calendarPrefix]);
+
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    void CapApp.getInfo()
+      .then((info) => setAppVersionLabel(`${info.version}（ビルド ${info.build}・Android）`))
+      .catch(() => undefined);
+  }, []);
+
+  // ステータスバーのアイコン色をアプリのテーマに合わせる（Android）
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return;
+    void SystemBars.setStyle({ style: darkMode ? SystemBarsStyle.Dark : SystemBarsStyle.Light }).catch(() => undefined);
+  }, [darkMode]);
 
   // --- Initialize ---
   useEffect(() => {
@@ -622,6 +685,62 @@ export default function App() {
     }
   };
 
+  /** 連携アカウントの変更: ログアウト → アカウント選択付きで再ログイン */
+  const handleChangeAccount = async () => {
+    if (!window.confirm('連携するGoogleアカウントを変更しますか？\nいったんログアウトし、アカウントの選択画面を表示します。この端末に保存済みのデータはそのまま残ります。')) {
+      return;
+    }
+    try {
+      await firebaseLogout();
+    } catch (error: unknown) {
+      console.warn('ログアウトに失敗しました:', error);
+    }
+    setLastSyncTime(null);
+    setSyncError(null);
+    await handleHeaderSignIn();
+  };
+
+  const calendarTargets = exportableTasks(tasks);
+
+  /** 完了タスクを Google カレンダーへ終日予定としてエクスポート */
+  const handleExportCalendar = async () => {
+    if (!authUser) {
+      alert('Googleカレンダーへのエクスポートには、Googleアカウントでのログインが必要です。');
+      return;
+    }
+    if (calendarTargets.length === 0) {
+      alert('エクスポートできる完了タスクがありません。');
+      return;
+    }
+    if (!window.confirm(
+      `完了したタスク ${calendarTargets.length} 件を、Googleカレンダー（${authUser.email || 'ログイン中のアカウント'}）に時間指定なしの予定として登録します。\n\n` +
+      '・すでに登録済みのタスクは、内容が変わっていれば更新し、同じならスキップします（重複登録はしません）。\n' +
+      '・予定の日付は「完了日」（未入力なら実施予定日）です。\n\nよろしいですか？'
+    )) {
+      return;
+    }
+    setIsExporting(true);
+    setExportSummary(null);
+    setExportProgress({ done: 0, total: calendarTargets.length });
+    try {
+      const r = await exportCompletedTasksToCalendar(tasks, calendarPrefix, (done, total) => setExportProgress({ done, total }));
+      const summary = `新規登録 ${r.created} 件・更新 ${r.updated} 件・スキップ ${r.skipped} 件${r.failed ? `・失敗 ${r.failed} 件` : ''}`;
+      setExportSummary(summary);
+      if (r.failed) {
+        setErrorDialog({ title: 'エクスポートの一部が失敗しました', message: summary, detail: r.errors.join('\n') });
+      } else {
+        alert(`Googleカレンダーへのエクスポートが完了しました。\n${summary}`);
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Googleカレンダーへのエクスポートに失敗しました。';
+      const detail = error instanceof CalendarError ? error.detail : errorDetail(error);
+      setErrorDialog({ title: 'エクスポートエラー', message, detail });
+    } finally {
+      setIsExporting(false);
+      setExportProgress(null);
+    }
+  };
+
   // 同一重要度の中で最後の数値＋１を自動設定
   const getNextPriorityNumber = (letter: PriorityLetter): number | null => {
     if (!letter) return null;
@@ -635,55 +754,35 @@ export default function App() {
     return maxNum + 1;
   };
 
-  // タスク内容入力時に重要度・緊急度・実施予定日を自動判定してプルダウンや期日を切り替える
+  // タスク内容入力時に実施予定日を自動判定する（重要度・緊急度は登録時に判定）
   const handleQuickTitleChange = (val: string) => {
     setQuickTitle(val);
-
-    const toHalfWidth = (str: string): string => {
-      return str.replace(/[Ａ-Ｚａ-ｚ０-９]/g, (s) => {
-        return String.fromCharCode(s.charCodeAt(0) - 0xFEE0);
-      });
-    };
-
-    let titleText = val.trim();
-    let normalizedText = toHalfWidth(titleText);
-
-    const matchBoth = normalizedText.match(/^([A-Ca-c])([0-9]{1,2})\s*(.*)$/);
-    if (matchBoth) {
-      const letter = matchBoth[1].toUpperCase() as PriorityLetter;
-      const num = parseInt(matchBoth[2], 10);
-      if (num >= 1 && num <= 20) {
-        setQuickLetter(letter);
-        setQuickNumber(num);
-      }
-    } else {
-      const matchLetter = normalizedText.match(/^([A-Ca-c])\s+(.*)$/);
-      const matchLetterEnd = normalizedText.match(/^([A-Ca-c])$/);
-      if (matchLetter) {
-        const letter = matchLetter[1].toUpperCase() as PriorityLetter;
-        setQuickLetter(letter);
-        setQuickNumber(getNextPriorityNumber(letter));
-      } else if (matchLetterEnd) {
-        const letter = matchLetterEnd[1].toUpperCase() as PriorityLetter;
-        setQuickLetter(letter);
-        setQuickNumber(getNextPriorityNumber(letter));
-      } else {
-        const matchNumber = normalizedText.match(/^([0-9]{1,2})\s*(.*)$/);
-        if (matchNumber) {
-          const num = parseInt(matchNumber[1], 10);
-          if (num >= 1 && num <= 20) {
-            setQuickLetter('');
-            setQuickNumber(num);
-          }
-        }
-      }
-    }
-
-    // 実施予定日の自動判定
     const { dueDate: parsedDate } = parseDueDateFromText(val);
     if (parsedDate) {
       setSelectedDate(parsedDate);
     }
+  };
+
+  /**
+   * 簡易登録の重要度・緊急度を決める。
+   * - プルダウン（重要度・緊急度）のどちらかを選んでいる場合: プルダウンの値だけを使い、
+   *   タイトル先頭の「A3」などは重要度・緊急度として使わない（二重に付与しない）。
+   *   その先頭トークンはタイトルから取り除く（「A1 | A3 会議」のような二重表示を防ぐ）。
+   * - プルダウンが両方「自動」の場合: 従来どおりタイトル先頭から自動判定する。
+   */
+  const resolveQuickPriority = (titleText: string): { letter: PriorityLetter; number: number | null; title: string; source: 'manual' | 'auto' | 'none' } => {
+    const parsed = parsePriorityPrefix(titleText);
+    const manual = quickLetter !== '' || quickNumber !== null;
+    const title = parsed.matched && parsed.rest.trim() ? parsed.rest : titleText.trim();
+    if (manual) {
+      const number = quickNumber !== null ? quickNumber : (quickLetter ? getNextPriorityNumber(quickLetter) : null);
+      return { letter: quickLetter, number, title, source: 'manual' };
+    }
+    if (parsed.matched) {
+      const number = parsed.letterOnly ? getNextPriorityNumber(parsed.letter) : parsed.number;
+      return { letter: parsed.letter, number, title, source: 'auto' };
+    }
+    return { letter: '', number: null, title, source: 'none' };
   };
 
   // 一覧・簡易登録画面の追加アクション
@@ -692,73 +791,18 @@ export default function App() {
     if (!quickTitle.trim()) return;
 
     // 先に日付表現を抽出して取り除く
-    let { dueDate: parsedDate, cleanedText: parsedTitle } = parseDueDateFromText(quickTitle);
+    const { dueDate: parsedDate, cleanedText: parsedTitle } = parseDueDateFromText(quickTitle);
+    const resolved = resolveQuickPriority(parsedTitle.trim() || quickTitle.trim());
+    const titleText = resolved.title.trim() || parsedTitle.trim() || quickTitle.trim();
 
-    const toHalfWidth = (str: string): string => {
-      return str.replace(/[Ａ-Ｚａ-ｚ０-９]/g, (s) => {
-        return String.fromCharCode(s.charCodeAt(0) - 0xFEE0);
-      });
-    };
-
-    let titleText = parsedTitle.trim();
-    let normalizedText = toHalfWidth(titleText);
-
-    let finalLetter: PriorityLetter = quickLetter;
-    let finalNumber: number | null = quickNumber;
-
-    const matchBoth = normalizedText.match(/^([A-Ca-c])([0-9]{1,2})\s*(.*)$/);
-    if (matchBoth) {
-      const letter = matchBoth[1].toUpperCase() as PriorityLetter;
-      const num = parseInt(matchBoth[2], 10);
-      if (num >= 1 && num <= 20) {
-        finalLetter = letter;
-        finalNumber = num;
-        const prefixLen = matchBoth[1].length + matchBoth[2].length;
-        let rest = titleText.substring(prefixLen);
-        rest = rest.replace(/^[\s　]+/, '');
-        titleText = rest;
-      }
-    } else {
-      const matchLetter = normalizedText.match(/^([A-Ca-c])\s+(.*)$/);
-      const matchLetterEnd = normalizedText.match(/^([A-Ca-c])$/);
-      if (matchLetter) {
-        finalLetter = matchLetter[1].toUpperCase() as PriorityLetter;
-        finalNumber = quickNumber || getNextPriorityNumber(finalLetter);
-        let rest = titleText.substring(1);
-        rest = rest.replace(/^[\s　]+/, '');
-        titleText = rest;
-      } else if (matchLetterEnd) {
-        finalLetter = matchLetterEnd[1].toUpperCase() as PriorityLetter;
-        finalNumber = quickNumber || getNextPriorityNumber(finalLetter);
-        titleText = '';
-      } else {
-        const matchNumber = normalizedText.match(/^([0-9]{1,2})\s*(.*)$/);
-        if (matchNumber) {
-          const num = parseInt(matchNumber[1], 10);
-          if (num >= 1 && num <= 20) {
-            finalLetter = '';
-            finalNumber = num;
-            const prefixLen = matchNumber[1].length;
-            let rest = titleText.substring(prefixLen);
-            rest = rest.replace(/^[\s　]+/, '');
-            titleText = rest;
-          }
-        }
-      }
-    }
-
-    if (!titleText.trim()) {
-      titleText = parsedTitle.trim() || quickTitle.trim();
-    }
-
-    const calculatedQ = getTaskQuadrant(finalLetter, finalNumber);
+    const calculatedQ = getTaskQuadrant(resolved.letter, resolved.number);
     const newTask: Task = {
       id: newTaskId(),
       userId: currentUserId(),
       title: titleText,
       notes: '',
-      priorityLetter: finalLetter,
-      priorityNumber: finalNumber,
+      priorityLetter: resolved.letter,
+      priorityNumber: resolved.number,
       quadrant: calculatedQ,
       dueDate: parsedDate || selectedDate,
       reminderTime: '',
@@ -1004,49 +1048,45 @@ export default function App() {
   const todayStr = getLocalDateString();
 
   return (
-    <div className="h-screen sm:h-auto overflow-hidden sm:overflow-visible flex flex-col bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-200" id="matrix-app-container">
+    <div className="app-shell h-[100dvh] sm:h-auto sm:min-h-screen overflow-hidden sm:overflow-visible flex flex-col bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-200" id="matrix-app-container">
       
       {/* Premium Top Line Accent */}
       <div className="h-1 bg-gradient-to-r from-emerald-500 via-zinc-800 to-amber-500 dark:from-emerald-400 dark:via-zinc-100 dark:to-amber-400" />
 
       {/* Header Bar */}
-      <header className="border-b border-zinc-200/60 dark:border-zinc-800 bg-white/80 dark:bg-zinc-900/80 backdrop-blur-md sticky top-0 z-30 flex-none" id="global-header">
-        <div className="max-w-6xl mx-auto px-4 py-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          
-          <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-start">
-            <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-              <div className="p-2 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 rounded-xl font-bold shadow-sm text-lg">
-                📅
-              </div>
-              <div>
-                <h1 className="text-lg font-black tracking-tight flex items-center gap-1.5 whitespace-nowrap min-w-0">
-                  <span className="truncate">ABC Planner</span>
-                  <button
-                    onClick={() => {
-                      if (currentView === 'settings') {
-                        setCurrentView(prevView);
-                      } else {
-                        setPrevView(currentView);
-                        setCurrentView('settings');
-                      }
-                    }}
-                    className={`p-1 rounded-lg transition-all active:scale-95 ${
-                      currentView === 'settings'
-                        ? 'bg-zinc-100 dark:bg-zinc-800 text-zinc-950 dark:text-white ring-1 ring-zinc-200 dark:ring-zinc-700'
-                        : 'text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800/50'
-                    }`}
-                    title="設定"
-                    id="btn-header-settings"
-                  >
-                    <Settings className="w-5 h-5" />
-                  </button>
-                </h1>
-                <p className="hidden sm:block text-[0.875rem] font-medium text-zinc-400 dark:text-zinc-500">
-                  重要度と緊急度の4つの領域で、時間と達成状況をプランニング
-                </p>
-              </div>
+      <header className="border-b border-zinc-200/60 dark:border-zinc-800 bg-white/90 dark:bg-zinc-900/90 backdrop-blur-md sticky top-0 z-30 flex-none" id="global-header">
+        <div className="max-w-6xl mx-auto px-3 sm:px-4 py-2 sm:py-3">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+            <img src="./icon-192.png" alt="" className="w-9 h-9 rounded-xl shadow-sm flex-none max-[379px]:hidden" />
+            <div className="min-w-0 flex-1">
+              <h1 className="text-base sm:text-lg font-black tracking-tight truncate leading-tight" id="app-title">
+                ABC ToDo Planner
+              </h1>
+              <p
+                onClick={!authUser && !isSigningIn ? () => void handleHeaderSignIn() : undefined}
+                role={!authUser ? 'button' : undefined}
+                className={`text-[0.75rem] sm:text-[0.8125rem] font-semibold truncate leading-tight ${!authUser ? 'cursor-pointer underline decoration-dotted underline-offset-2 ' : ''}${
+                  !isOnline || (syncError && !isSyncing) ? 'text-amber-600 dark:text-amber-400' : 'text-zinc-500 dark:text-zinc-400'
+                }`}
+                id="header-account-line"
+                title={authUser?.email || ''}
+              >
+                {authUser
+                  ? `${authUser.email || authUser.displayName || 'ログイン済み'}${
+                      !isOnline
+                        ? '・オフライン'
+                        : isSyncing
+                          ? '・同期中…'
+                          : syncError
+                            ? '・同期エラー'
+                            : lastSyncTime
+                              ? `・同期 ${shortSyncTime(lastSyncTime)}`
+                              : ''
+                    }`
+                  : (isSigningIn ? 'ログイン中…' : syncError ? 'ログイン失敗・タップで再試行' : '未ログイン・タップでログイン')}
+              </p>
             </div>
-            <SyncStatusChip
+            <HeaderStatus
               user={authUser}
               isOnline={isOnline}
               lastSyncTime={lastSyncTime}
@@ -1054,15 +1094,39 @@ export default function App() {
               isSyncing={isSyncing}
               isSigningIn={isSigningIn}
               onSignIn={handleHeaderSignIn}
-              onSignOut={handleHeaderSignOut}
+              onOpenSettings={() => {
+                if (currentView !== 'settings') {
+                  setPrevView(currentView);
+                  setCurrentView('settings');
+                }
+              }}
               onShowError={() => setErrorDialog({
-                title: '同期エラーの詳細',
+                title: authUser ? '同期エラーの詳細' : 'ログインエラーの詳細',
                 message: syncError || '',
                 detail: syncErrorDetail,
               })}
             />
+            <button
+              onClick={() => {
+                if (currentView === 'settings') {
+                  setCurrentView(prevView === 'settings' ? 'list' : prevView);
+                } else {
+                  setPrevView(currentView);
+                  setCurrentView('settings');
+                }
+              }}
+              className={`h-9 w-9 flex items-center justify-center rounded-xl border transition-all active:scale-95 flex-none ${
+                currentView === 'settings'
+                  ? 'bg-zinc-900 text-white border-zinc-900 dark:bg-zinc-100 dark:text-zinc-950 dark:border-zinc-100'
+                  : 'text-zinc-600 dark:text-zinc-300 border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+              }`}
+              title="設定"
+              aria-label="設定"
+              id="btn-header-settings"
+            >
+              <Settings className="w-5 h-5" />
+            </button>
           </div>
-
         </div>
       </header>
 
@@ -1114,7 +1178,7 @@ export default function App() {
       <main 
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
-        className="w-full min-w-0 max-w-6xl mx-auto px-4 py-6 flex-1 overflow-y-auto max-h-[calc(100vh-215px)] sm:max-h-none sm:overflow-visible pb-28 sm:pb-6" 
+        className="w-full min-w-0 max-w-6xl mx-auto px-3 sm:px-4 py-4 sm:py-6 flex-1 min-h-0 overflow-y-auto sm:overflow-visible" 
         id="view-panel-viewport"
       >
         
@@ -2104,11 +2168,149 @@ export default function App() {
 
         {/* VIEW: 設定画面 (すべての画面上部から移動された通知許可〜読み込み設定) */}
         {currentView === 'settings' && (
-          <div className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl p-6 shadow-xs max-w-2xl mx-auto animate-fade-in" id="view-settings-container">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl p-4 sm:p-6 shadow-xs max-w-2xl mx-auto animate-fade-in" id="view-settings-container">
             <h2 className="text-base font-black text-zinc-800 dark:text-zinc-100 mb-6 flex items-center gap-2 pb-3 border-b border-zinc-100 dark:border-zinc-800">
               <Settings className="w-5 h-5 text-zinc-500" />
-              <span>設定</span>
+              <span className="flex-1">設定</span>
+              <button
+                type="button"
+                onClick={() => setCurrentView(prevView === 'settings' ? 'list' : prevView)}
+                className="w-10 h-10 rounded-full bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 flex items-center justify-center shadow-md active:scale-95"
+                aria-label="設定を閉じる"
+                title="閉じる"
+                id="btn-close-settings"
+              >
+                <X className="w-5 h-5" strokeWidth={3} />
+              </button>
             </h2>
+
+            {/* Google アカウント連携 */}
+            <div className="mb-6" id="settings-account">
+              <h3 className="text-xs font-bold text-zinc-400 dark:text-zinc-500 mb-2.5 uppercase tracking-wider">
+                連携しているGoogleアカウント
+              </h3>
+              <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl flex flex-col gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-10 h-10 rounded-full bg-zinc-200 dark:bg-zinc-800 flex items-center justify-center flex-none overflow-hidden">
+                    {authUser?.photoURL ? (
+                      <img src={authUser.photoURL} alt="" className="w-full h-full object-cover" referrerPolicy="no-referrer" />
+                    ) : (
+                      <UserRound className="w-5 h-5 text-zinc-500" />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold text-zinc-800 dark:text-zinc-100 break-all" id="settings-account-email">
+                      {authUser ? (authUser.email || authUser.displayName || 'ログイン済み') : '未ログイン'}
+                    </div>
+                    <div className="text-[0.8125rem] font-semibold text-zinc-500 dark:text-zinc-400">
+                      {authUser
+                        ? (!isOnline ? 'オフライン' : isSyncing ? '同期中…' : syncError ? '同期エラー' : lastSyncTime ? `最終同期 ${lastSyncTime}` : 'クラウド同期中')
+                        : 'この端末のみに保存しています'}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {authUser ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void handleChangeAccount()}
+                        disabled={isSigningIn}
+                        className="px-4 py-2 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 rounded-xl text-xs font-bold disabled:opacity-60"
+                        id="btn-change-account"
+                      >
+                        {isSigningIn ? '接続中…' : 'アカウントを変更'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleHeaderSignOut()}
+                        className="px-4 py-2 border border-zinc-200 dark:border-zinc-700 text-zinc-600 dark:text-zinc-300 rounded-xl text-xs font-bold flex items-center gap-1.5"
+                        id="btn-settings-signout"
+                      >
+                        <LogOut className="w-3.5 h-3.5" />
+                        ログアウト
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => void handleHeaderSignIn()}
+                      disabled={isSigningIn}
+                      className="px-4 py-2 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 rounded-xl text-xs font-bold disabled:opacity-60"
+                      id="btn-settings-signin"
+                    >
+                      {isSigningIn ? '接続中…' : 'Googleでログイン'}
+                    </button>
+                  )}
+                  {syncError && (
+                    <button
+                      type="button"
+                      onClick={() => setErrorDialog({ title: authUser ? '同期エラーの詳細' : 'ログインエラーの詳細', message: syncError, detail: syncErrorDetail })}
+                      className="px-4 py-2 border border-amber-300 text-amber-700 dark:text-amber-400 rounded-xl text-xs font-bold"
+                    >
+                      ⚠ エラーの詳細
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Google カレンダーへエクスポート */}
+            <div className="mb-6" id="settings-export">
+              <h3 className="text-xs font-bold text-zinc-400 dark:text-zinc-500 mb-2.5 uppercase tracking-wider">
+                エクスポート（Googleカレンダー）
+              </h3>
+              <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl flex flex-col gap-3">
+                <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
+                  完了したタスクだけを、Googleカレンダーに時間指定なし（終日）の予定として登録します。予定の日付は完了日（未入力なら実施予定日）、予定の詳細にはタスクの「メモ・詳細」が入ります。2回目以降は登録済みの予定を更新し、重複登録はしません。
+                </p>
+                <div>
+                  <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-300 mb-1" htmlFor="calendar-prefix">
+                    プレフィックス（予定名の先頭に付ける文字）
+                  </label>
+                  <input
+                    id="calendar-prefix"
+                    type="text"
+                    value={calendarPrefix}
+                    onChange={(e) => setCalendarPrefix(e.target.value)}
+                    placeholder="例: [ABC]"
+                    maxLength={30}
+                    className="w-full px-3 py-2 text-sm bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-1 focus:ring-zinc-900 dark:focus:ring-zinc-200 font-semibold"
+                  />
+                  <div className="mt-2 text-[0.8125rem] font-semibold text-zinc-500 dark:text-zinc-400">
+                    予定名の形式: プレフィックス＋重要度＋緊急度＋タスク名＋（完了予定日）
+                  </div>
+                  <div className="mt-1 px-3 py-2 rounded-lg bg-white dark:bg-zinc-900 border border-dashed border-zinc-300 dark:border-zinc-700 text-sm font-bold text-zinc-800 dark:text-zinc-100 break-all" id="calendar-title-preview">
+                    {(() => {
+                      const sample = calendarTargets[0] || { title: '企画書を提出', priorityLetter: 'A' as PriorityLetter, priorityNumber: 1, dueDate: getLocalDateString() };
+                      return `例）${buildEventTitle(sample, calendarPrefix)}`;
+                    })()}
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void handleExportCalendar()}
+                    disabled={isExporting}
+                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold flex items-center gap-2 disabled:opacity-60 shadow-sm"
+                    id="btn-export-calendar"
+                  >
+                    <CalendarPlus className="w-4 h-4" />
+                    {isExporting
+                      ? `エクスポート中… ${exportProgress ? `${exportProgress.done}/${exportProgress.total}` : ''}`
+                      : 'カレンダーへエクスポート'}
+                  </button>
+                  <span className="text-[0.8125rem] font-semibold text-zinc-500 dark:text-zinc-400">
+                    対象: 完了タスク {calendarTargets.length} 件
+                  </span>
+                </div>
+                {exportSummary && (
+                  <div className="text-[0.8125rem] font-bold text-emerald-700 dark:text-emerald-400" id="calendar-export-summary">
+                    前回の結果: {exportSummary}
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* Theme setting */}
             <div className="mb-6">
@@ -2188,9 +2390,9 @@ export default function App() {
                 システム情報
               </h3>
               <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl text-[0.875rem] font-semibold text-zinc-500 dark:text-zinc-400 leading-relaxed space-y-1">
-                <div>アプリ名: ABC Planner（Google Play 掲載名: ABC ToDo Planner）</div>
+                <div>アプリ名: ABC ToDo Planner</div>
+                <div id="settings-build-version">ビルドバージョン: {appVersionLabel}</div>
                 <div>データストレージ: この端末のキャッシュ ＋ Google アカウントでログインするとクラウド同期</div>
-                <div>バージョン: 0.3.0</div>
               </div>
             </div>
 
@@ -2199,7 +2401,7 @@ export default function App() {
 
         {/* VIEW 3: 詳細入力画面 (簡易登録画面の一覧から、一行選択して詳細入力画面へ遷移、または新規作成) */}
         {currentView === 'detail' && (
-          <div className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl p-6 shadow-xs max-w-2xl mx-auto animate-fade-in" id="view-detail-container">
+          <div className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl px-4 pt-4 sm:px-6 sm:pt-6 shadow-xs max-w-2xl mx-auto animate-fade-in" id="view-detail-container">
             <TaskForm
               task={tasks.find((t) => t.id === editingTaskId) || null}
               defaultDate={selectedDate}
@@ -2221,50 +2423,32 @@ export default function App() {
 
       {/* BOTTOM SECTION: Navigation Tabs & Quick Registration (Visible on non-detail views) */}
       {currentView !== 'detail' && (
-        <div className="max-w-6xl mx-auto sm:px-4 sm:pb-12 flex flex-col-reverse sm:flex-col gap-4 sm:gap-6 fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-t border-zinc-200/80 dark:border-zinc-800/80 p-4 pb-6 sm:relative sm:bottom-auto sm:z-0 sm:bg-transparent sm:border-t-0 sm:p-0 sm:pb-12" id="bottom-controls-section">
+        <div className="app-bottom w-full max-w-6xl mx-auto flex-none flex flex-col-reverse sm:flex-col gap-3 sm:gap-6 z-40 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border-t border-zinc-200/80 dark:border-zinc-800/80 px-3 pt-3 sm:px-4 sm:pt-0 sm:bg-transparent sm:dark:bg-transparent sm:border-t-0" id="bottom-controls-section">
           
           {/* Tab switching buttons */}
           <div className="border-0 sm:border-t border-zinc-200/60 dark:border-zinc-800 pt-0 sm:pt-6 w-full">
             <div className="flex bg-zinc-100 dark:bg-zinc-900 p-1 rounded-xl max-w-lg mx-auto gap-1" id="bottom-navigation-tabs">
-              <button
-                onClick={() => {
-                  setCurrentView('list');
-                  setSelectedQuadrant(null);
-                }}
-                className={`flex-1 py-2.5 text-xs font-bold rounded-lg transition-all ${
-                  currentView === 'list'
-                    ? 'bg-white dark:bg-zinc-800 text-zinc-950 dark:text-white shadow-xs font-extrabold border border-zinc-200/40 dark:border-zinc-700/50'
-                    : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
-                }`}
-              >
-                一覧
-              </button>
-              
-              <button
-                onClick={() => {
-                  setCurrentView('matrix');
-                }}
-                className={`flex-1 py-2.5 text-xs font-bold rounded-lg transition-all ${
-                  currentView === 'matrix'
-                    ? 'bg-white dark:bg-zinc-800 text-zinc-950 dark:text-white shadow-xs font-extrabold border border-zinc-200/40 dark:border-zinc-700/50'
-                    : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
-                }`}
-              >
-                4つの領域
-              </button>
-
-              <button
-                onClick={() => {
-                  setCurrentView('daily');
-                }}
-                className={`flex-1 py-2.5 text-xs font-bold rounded-lg transition-all ${
-                  currentView === 'daily'
-                    ? 'bg-white dark:bg-zinc-800 text-zinc-950 dark:text-white shadow-xs font-extrabold border border-zinc-200/40 dark:border-zinc-700/50'
-                    : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
-                }`}
-              >
-                デイリー
-              </button>
+              {([
+                { view: 'daily', label: 'デイリー' },
+                { view: 'matrix', label: '4つの領域' },
+                { view: 'list', label: '一覧' },
+              ] as const).map((tab) => (
+                <button
+                  key={tab.view}
+                  onClick={() => {
+                    setCurrentView(tab.view);
+                    if (tab.view === 'list') setSelectedQuadrant(null);
+                  }}
+                  className={`flex-1 py-2.5 text-xs font-bold rounded-lg transition-all ${
+                    currentView === tab.view
+                      ? 'bg-white dark:bg-zinc-800 text-zinc-950 dark:text-white shadow-xs font-extrabold border border-zinc-200/40 dark:border-zinc-700/50'
+                      : 'text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300'
+                  }`}
+                  id={`tab-${tab.view}`}
+                >
+                  {tab.label}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -2275,51 +2459,59 @@ export default function App() {
                 予定の簡易登録
               </h3>
               
-              <form onSubmit={handleQuickAdd} className="flex flex-row gap-2.5 items-end w-full" id="quick-add-form">
-                
-                {/* 1. Importance (Priority Letter) Selector Dropdown */}
-                <div className="hidden sm:block w-full md:w-36">
-                  <label className="block text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-letter">
+              <form onSubmit={handleQuickAdd} className="flex flex-row gap-1.5 sm:gap-2.5 items-end w-full" id="quick-add-form">
+
+                {/* 1. 重要度（空欄=自動判定） */}
+                <div className="relative flex-none w-[70px] sm:w-32">
+                  <label className="hidden sm:block text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-letter">
                     重要度
                   </label>
                   <select
                     id="quick-letter"
+                    aria-label="重要度"
                     value={quickLetter}
                     onChange={(e) => {
                       const letter = e.target.value as PriorityLetter;
                       setQuickLetter(letter);
-                      setQuickNumber(getNextPriorityNumber(letter));
+                      setQuickNumber(letter ? getNextPriorityNumber(letter) : null);
                     }}
-                    className="w-full px-3 py-1.5 text-xs bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none text-zinc-800 dark:text-zinc-200 font-bold"
+                    className={`w-full h-10 pl-2 pr-5 sm:pl-3 appearance-none text-xs bg-zinc-50 dark:bg-zinc-950 border rounded-xl focus:outline-none font-bold ${
+                      quickLetter ? 'border-zinc-900 dark:border-zinc-200 text-zinc-900 dark:text-zinc-50' : 'border-zinc-200 dark:border-zinc-800 text-zinc-400 dark:text-zinc-500'
+                    }`}
                   >
-                    <option value="">なし</option>
-                    <option value="A">A - 重要度最高</option>
-                    <option value="B">B - 重要</option>
-                    <option value="C">C - 重要ではない</option>
+                    <option value="">重要度</option>
+                    <option value="A">A</option>
+                    <option value="B">B</option>
+                    <option value="C">C</option>
                   </select>
+                  <ChevronDown className="pointer-events-none absolute right-1.5 bottom-3 w-3.5 h-3.5 text-zinc-400" />
                 </div>
 
-                {/* 2. Urgency (Priority Number) Selector Dropdown */}
-                <div className="hidden sm:block w-full md:w-28">
-                  <label className="block text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-number">
+                {/* 2. 緊急度（空欄=自動判定） */}
+                <div className="relative flex-none w-[70px] sm:w-28">
+                  <label className="hidden sm:block text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-number">
                     緊急度
                   </label>
                   <select
                     id="quick-number"
+                    aria-label="緊急度"
                     value={quickNumber === null ? '' : quickNumber}
                     onChange={(e) => setQuickNumber(e.target.value === '' ? null : parseInt(e.target.value, 10))}
-                    className="w-full px-3 py-1.5 text-xs bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none text-zinc-800 dark:text-zinc-200 font-bold"
+                    className={`w-full h-10 pl-2 pr-5 sm:pl-3 appearance-none text-xs bg-zinc-50 dark:bg-zinc-950 border rounded-xl focus:outline-none font-bold ${
+                      quickNumber !== null ? 'border-zinc-900 dark:border-zinc-200 text-zinc-900 dark:text-zinc-50' : 'border-zinc-200 dark:border-zinc-800 text-zinc-400 dark:text-zinc-500'
+                    }`}
                   >
-                    <option value="">なし</option>
+                    <option value="">緊急度</option>
                     {Array.from({ length: Math.max(30, (quickNumber || 0) + 10) }, (_, i) => i + 1).map((val) => (
                       <option key={val} value={val}>{val}</option>
                     ))}
                   </select>
+                  <ChevronDown className="pointer-events-none absolute right-1.5 bottom-3 w-3.5 h-3.5 text-zinc-400" />
                 </div>
 
                 {/* 3. Task Title Input */}
-                <div className="flex-1 w-full">
-                  <label className="block text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-1 sm:block hidden" htmlFor="quick-title">
+                <div className="flex-1 min-w-0">
+                  <label className="hidden sm:block text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-title">
                     タスク内容
                   </label>
                   <input
@@ -2329,12 +2521,12 @@ export default function App() {
                     value={quickTitle}
                     onChange={(e) => handleQuickTitleChange(e.target.value)}
                     placeholder="予定を自動判定で登録..."
-                    className="w-full px-3.5 py-2 text-xs bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-1 focus:ring-zinc-900 dark:focus:ring-zinc-200 text-zinc-800 dark:text-zinc-100 font-semibold h-9"
+                    className="w-full h-10 px-2.5 sm:px-3.5 text-xs bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-1 focus:ring-zinc-900 dark:focus:ring-zinc-200 text-zinc-800 dark:text-zinc-100 font-semibold"
                   />
                 </div>
 
                 {/* 4. Scheduled Date Input */}
-                <div className="hidden sm:block w-full md:w-36">
+                <div className="hidden sm:block w-full md:w-40">
                   <label className="block text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-date">
                     実施予定日
                   </label>
@@ -2343,35 +2535,47 @@ export default function App() {
                     type="date"
                     value={selectedDate}
                     onChange={(e) => e.target.value && setSelectedDate(e.target.value)}
-                    className="w-full px-2.5 py-1.5 text-xs bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none text-zinc-800 dark:text-zinc-200 font-semibold"
+                    className="w-full h-10 px-2.5 text-xs bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none text-zinc-800 dark:text-zinc-200 font-semibold"
                   />
                 </div>
 
                 {/* Quick Add Submit Button */}
                 <button
                   type="submit"
-                  className="px-4 sm:px-5 py-2 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 rounded-xl text-xs font-bold hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-1 shadow-sm w-20 sm:w-auto h-9 sm:h-auto flex-none"
+                  className="h-10 w-10 sm:w-auto sm:px-5 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 rounded-xl text-xs font-bold hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-1 shadow-sm flex-none"
                   id="btn-quick-add"
+                  aria-label="追加"
                 >
-                  <Plus className="w-4 h-4" />
+                  <Plus className="w-5 h-5 sm:w-4 sm:h-4" />
                   <span className="hidden sm:inline">追加</span>
-                  <span className="sm:hidden inline">登録</span>
                 </button>
 
               </form>
 
-              {/* Automatic Quadrant classification hint */}
-              <div className="hidden sm:flex mt-3 items-center gap-1 text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500">
-                <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
-                <span>自動判定: 第{getTaskQuadrant(quickLetter, quickNumber)}領域 (</span>
-                <span className="text-zinc-500 dark:text-zinc-400">
-                  {getTaskQuadrant(quickLetter, quickNumber) === 'I' && '重要 かつ 緊急 - 第Ⅰ領域（必須の領域）'}
-                  {getTaskQuadrant(quickLetter, quickNumber) === 'II' && '重要 かつ 緊急ではない - 第Ⅱ領域（自己投資の領域）'}
-                  {getTaskQuadrant(quickLetter, quickNumber) === 'III' && '重要ではない かつ 緊急 - 第Ⅲ領域（錯覚 of の領域）'}
-                  {getTaskQuadrant(quickLetter, quickNumber) === 'IV' && '重要ではない かつ 緊急ではない - 第Ⅳ領域（無駄 of の領域）'}
-                </span>
-                <span>)</span>
-              </div>
+              {/* 重要度・緊急度の判定結果（入力中のみ表示） */}
+              {(() => {
+                const r = resolveQuickPriority(parseDueDateFromText(quickTitle).cleanedText.trim() || quickTitle.trim());
+                const q = getTaskQuadrant(r.letter, r.number);
+                const qLabel = q === 'I' ? '第Ⅰ領域（必須）' : q === 'II' ? '第Ⅱ領域（自己投資）' : q === 'III' ? '第Ⅲ領域（錯覚）' : '第Ⅳ領域（無駄）';
+                const pr = `${r.letter}${r.number ?? ''}` || 'なし';
+                if (!quickTitle.trim() && r.source !== 'manual') {
+                  return (
+                    <div className="hidden sm:flex mt-2 items-center gap-1 text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500">
+                      <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
+                      <span>重要度・緊急度が「自動」のときは、先頭の「A3 」などから自動判定します</span>
+                    </div>
+                  );
+                }
+                return (
+                  <div className="mt-1.5 sm:mt-2 flex items-center gap-1 text-[0.75rem] sm:text-[0.8125rem] font-bold text-zinc-500 dark:text-zinc-400 truncate" id="quick-priority-hint">
+                    <Sparkles className="w-3.5 h-3.5 text-emerald-500 flex-none" />
+                    <span className="truncate">
+                      {r.source === 'manual' ? '選択' : r.source === 'auto' ? '自動判定' : '判定'}: {pr}・{qLabel}
+                      {r.source === 'manual' && parsePriorityPrefix(quickTitle).matched ? '（文頭の優先度は使いません）' : ''}
+                    </span>
+                  </div>
+                );
+              })()}
 
             </section>
           )}

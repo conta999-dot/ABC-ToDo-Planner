@@ -25,6 +25,27 @@ html {
   html { font-size: 112.5%; }
 }
 
+/*
+ * Web版（PCブラウザ・スマホのChrome）は Android アプリ（WebView が端末の文字サイズ設定で拡大）
+ * より小さく見えていたため、ひと回り大きくして見た目を揃える（v0.5.0）
+ *   PC・タブレット: 18px / スマホ幅: 20px
+ */
+html.is-web { font-size: 112.5%; }
+@media (max-width: 640px) {
+  html.is-web { font-size: 125%; }
+}
+
+/* Android のステータスバー・ナビゲーションバーと重ならないようにする（edge-to-edge 対応） */
+.app-shell {
+  padding-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+}
+.app-bottom {
+  padding-bottom: calc(0.75rem + var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px)));
+}
+@media (min-width: 640px) {
+  .app-bottom { padding-bottom: 3rem; }
+}
+
 /* Custom scrollbars and transition tweaks */
 @layer base {
   ::-webkit-scrollbar {

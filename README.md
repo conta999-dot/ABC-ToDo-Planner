@@ -1,11 +1,11 @@
-# ABC Planner
+# ABC ToDo Planner
 
 重要度と緊急度の4つの領域でタスクを整理するプランナーです。
 
-- アプリ名: **ABC Planner**
+- アプリ名: **ABC ToDo Planner**
 - Google Play 掲載名（予定）: **ABC ToDo Planner**
 - パッケージ ID: `com.conta999.abctodoplanner`
-- バージョン: 0.3.0
+- バージョン: 0.5.0（versionCode 6）
 - Firebase プロジェクト: `abc-todo-planner-1b179`
 - PC 版: https://conta999-dot.github.io/ABC-ToDo-Planner/
 
@@ -17,6 +17,19 @@ Web 版は Firebase の Web 用クライアント設定（`firebase-applet-confi
 
 - **PC（ブラウザ）**: Firebase Auth の Google ポップアップで、その場で選んだアカウントにログインします。
 - **Android**: `google-services.json` は使いません。システムのブラウザで、GitHub Pages 上のログイン用ページ（`auth.html`）を開きます。そこから Firebase 標準の `signInWithRedirect`（リダイレクト先は `https://abc-todo-planner-1b179.firebaseapp.com/__/auth/handler`）で Google の公式画面を表示し、選んだアカウントの ID トークンを端末内の `http://127.0.0.1:41827/auth/callback` 経由でアプリに戻し、`signInWithCredential` します。Google Cloud で Android アプリや SHA-1、OAuth のリダイレクト URI を追加する必要はありません。
+
+## Google カレンダーへのエクスポート（v0.5.0〜）
+
+設定画面（右上の歯車）の「エクスポート」で、**完了したタスクだけ**を Google カレンダー（メインのカレンダー）に終日予定として登録します。
+
+- 予定名: `プレフィックス＋重要度＋緊急度＋タスク名＋（完了予定日）` 例: `[ABC]A1 企画書を提出（2026/11/19）`（プレフィックスは端末ごとに保存）
+- 予定の日付: 完了日（未入力なら実施予定日）
+- 予定の詳細: タスクの「メモ・詳細」
+- 重複防止: 予定の `extendedProperties.private`（`abcTodoPlanner=1`, `abcTaskId=<タスクID>`）で登録済みかを判定し、内容が変わっていれば更新、同じならスキップします。
+- 権限: `https://www.googleapis.com/auth/calendar.events`（Android はネイティブの AuthorizationClient、Web は Firebase のポップアップ再認証で取得）
+- 事前に Google Cloud で「Google Calendar API」を有効にしておく必要があります。
+
+アイコンの元データは `design/icon/`（`gen_svg.py` で SVG を作り、`render.mjs` で各サイズの PNG を書き出し）。
 
 ## 必要要件（一度だけ、Firebase コンソール）
 

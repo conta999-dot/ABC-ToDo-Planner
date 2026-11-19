@@ -23,7 +23,7 @@ const setMessage = (status: string, detail?: string) => {
 const sendToApp = (params: Record<string, string>) => {
   sessionStorage.removeItem(REDIRECT_FLAG);
   const url = `${LOOPBACK_CONTINUE_URI}?${new URLSearchParams(params).toString()}`;
-  setMessage('アプリに戻っています…', 'この画面を閉じて、ABC Planner に戻ってください。');
+  setMessage('アプリに戻っています…', 'この画面を閉じて、ABC ToDo Planner に戻ってください。');
   if (loginBtn) loginBtn.style.display = 'none';
   window.location.replace(url);
 };
@@ -97,7 +97,7 @@ const run = async () => {
     showButton('ログインを完了できませんでした', 'もう一度ボタンを押してください。');
     return;
   }
-  showButton('ABC Planner にログイン', '下のボタンを押して、Googleアカウントを選んでください。');
+  showButton('ABC ToDo Planner にログイン', '下のボタンを押して、Googleアカウントを選んでください。');
 };
 
 loginBtn?.addEventListener('click', () => {

@@ -21,6 +21,7 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
   const [reminderEnabled, setReminderEnabled] = useState(false);
   const [status, setStatus] = useState<TaskStatus>('pending');
   const [completedDate, setCompletedDate] = useState('');
+  const [showQuadrantInfo, setShowQuadrantInfo] = useState(false);
 
   // Load task values if editing
   useEffect(() => {
@@ -189,20 +190,23 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
 
   return (
     <div className="flex flex-col gap-4" id="task-form-container">
-      <div className="flex items-center justify-between border-b border-zinc-100 dark:border-zinc-800 pb-4">
+      <div className="flex items-center justify-between gap-3 border-b border-zinc-100 dark:border-zinc-800 pb-3">
         <h3 className="font-bold text-base text-zinc-900 dark:text-zinc-50" id="form-title">
           {task ? 'タスク詳細・編集' : '新しいタスクを作成'}
         </h3>
         <button
+          type="button"
           onClick={onCancel}
-          className="p-1 rounded-lg text-zinc-400 hover:text-zinc-500 dark:hover:text-zinc-300 transition-colors"
+          className="w-11 h-11 flex-none rounded-full bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 shadow-md ring-4 ring-zinc-900/10 dark:ring-white/10 flex items-center justify-center hover:bg-zinc-700 dark:hover:bg-white active:scale-95 transition-all"
+          aria-label="閉じる"
+          title="閉じる"
           id="btn-close-form"
         >
-          <X className="w-5 h-5" />
+          <X className="w-6 h-6" strokeWidth={3} />
         </button>
       </div>
 
-      <form onSubmit={handleSubmit} className="flex flex-col gap-5" id="task-edit-form">
+      <form onSubmit={handleSubmit} className="flex flex-col gap-4" id="task-edit-form">
         
         {/* Title */}
         <div>
@@ -217,21 +221,6 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
             onChange={(e) => handleTitleChange(e.target.value)}
             placeholder="やるべきことを入力してください (例: A3 顧客への提案書作成)"
             className="w-full px-3.5 py-2 text-sm bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-950 dark:focus:ring-zinc-300 text-zinc-900 dark:text-zinc-50 font-medium"
-          />
-        </div>
-
-        {/* Notes */}
-        <div>
-          <label className="block text-xs font-bold text-zinc-400 dark:text-zinc-500 mb-1.5" htmlFor="task-notes">
-            メモ・詳細
-          </label>
-          <textarea
-            id="task-notes"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="タスクの補足、必要な資料、関連リンクなど"
-            rows={3}
-            className="w-full px-3.5 py-2 text-sm bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-950 dark:focus:ring-zinc-300 text-zinc-900 dark:text-zinc-50 resize-none"
           />
         </div>
 
@@ -272,22 +261,40 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
           </div>
         </div>
 
-        {/* Active Quadrant Helper Box */}
-        <div className="bg-zinc-50 dark:bg-zinc-900/50 rounded-xl p-3 border border-zinc-100 dark:border-zinc-800/50 flex items-start gap-2.5">
-          <Info className="w-4 h-4 text-zinc-400 mt-0.5 flex-shrink-0" />
-          <div className="text-xs">
+        {/* 自動判定の領域（説明は (i) ボタンを押したときだけ表示） */}
+        <div className="-mt-2">
+          <div className="flex items-center gap-2 text-xs">
             <span className="font-bold text-zinc-700 dark:text-zinc-300">
-              自動判定: 第{calculatedQuadrant}領域 (
-              {calculatedQuadrant === 'I' && '第Ⅰ領域（必須の領域） - 重要(A)かつ緊急'}
-              {calculatedQuadrant === 'II' && '第Ⅱ領域（自己投資の領域） - 重要(B)かつ緊急ではない'}
-              {calculatedQuadrant === 'III' && '第Ⅲ領域（錯覚の領域） - 重要ではない(C)かつ緊急(数字入りすべて)'}
-              {calculatedQuadrant === 'IV' && '第Ⅳ領域（無駄の領域） - 重要ではない(未設定/C)かつ緊急ではない'}
-              )
+              自動判定: 第{calculatedQuadrant}領域
             </span>
-            <p className="text-zinc-400 mt-0.5 font-medium">
-              優先度の英字と数字から自動判定されます。タイトルに「A3 タスク」のように入力すると、重要度(A〜C)と緊急度(1〜20)を自動で抽出・設定します。
-            </p>
+            <button
+              type="button"
+              onClick={() => setShowQuadrantInfo((v) => !v)}
+              className={`w-7 h-7 rounded-full flex items-center justify-center border transition-colors ${
+                showQuadrantInfo
+                  ? 'bg-zinc-900 text-white border-zinc-900 dark:bg-zinc-100 dark:text-zinc-950'
+                  : 'text-zinc-500 border-zinc-300 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800'
+              }`}
+              aria-label="重要度・緊急度の説明"
+              aria-expanded={showQuadrantInfo}
+              id="btn-quadrant-info"
+            >
+              <Info className="w-4 h-4" />
+            </button>
           </div>
+          {showQuadrantInfo && (
+            <div className="mt-2 bg-zinc-50 dark:bg-zinc-900/50 rounded-xl p-3 border border-zinc-100 dark:border-zinc-800/50 text-xs animate-fade-in" id="quadrant-info-box">
+              <span className="font-bold text-zinc-700 dark:text-zinc-300">
+                {calculatedQuadrant === 'I' && '第Ⅰ領域（必須の領域） - 重要(A)かつ緊急'}
+                {calculatedQuadrant === 'II' && '第Ⅱ領域（自己投資の領域） - 重要(B)かつ緊急ではない'}
+                {calculatedQuadrant === 'III' && '第Ⅲ領域（錯覚の領域） - 重要ではない(C)かつ緊急(数字入りすべて)'}
+                {calculatedQuadrant === 'IV' && '第Ⅳ領域（無駄の領域） - 重要ではない(未設定/C)かつ緊急ではない'}
+              </span>
+              <p className="text-zinc-500 dark:text-zinc-400 mt-0.5 font-medium">
+                優先度の英字と数字から自動判定されます。タイトルに「A3 タスク」のように入力すると、重要度(A〜C)と緊急度(1〜20)を自動で抽出・設定します。
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -383,8 +390,23 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
           )}
         </div>
 
-        {/* Actions */}
-        <div className="flex justify-end items-center gap-2 border-t border-zinc-100 dark:border-zinc-800 pt-4 mt-2">
+        {/* Notes */}
+        <div>
+          <label className="block text-xs font-bold text-zinc-400 dark:text-zinc-500 mb-1.5" htmlFor="task-notes">
+            メモ・詳細
+          </label>
+          <textarea
+            id="task-notes"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="タスクの補足、必要な資料、関連リンクなど"
+            rows={4}
+            className="w-full px-3.5 py-2 text-sm bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-950 dark:focus:ring-zinc-300 text-zinc-900 dark:text-zinc-50 resize-none"
+          />
+        </div>
+
+        {/* Actions（画面下に固定して保存ボタンを常に表示） */}
+        <div className="sticky -bottom-4 sm:bottom-0 z-10 -mx-4 sm:-mx-6 px-4 sm:px-6 py-3 bg-white/95 dark:bg-zinc-900/95 backdrop-blur-sm flex justify-end items-center gap-2 border-t border-zinc-200 dark:border-zinc-800 rounded-b-2xl" id="task-form-actions">
           {task && onDelete && (
             <button
               type="button"
@@ -393,28 +415,28 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
                   onDelete(task.id);
                 }
               }}
-              className="mr-auto px-4 py-2 text-xs font-bold text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 border border-red-200 dark:border-red-900/40 rounded-xl hover:bg-red-50 dark:hover:bg-red-950/20 transition-all flex items-center gap-1.5"
+              className="mr-auto whitespace-nowrap px-3 py-2.5 text-xs font-bold text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300 border border-red-200 dark:border-red-900/40 rounded-xl hover:bg-red-50 dark:hover:bg-red-950/20 transition-all flex items-center gap-1.5"
               id="btn-form-delete"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              削除する
+              削除
             </button>
           )}
           <button
             type="button"
             onClick={onCancel}
-            className="px-4 py-2 text-xs font-bold text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-100 transition-colors"
+            className="whitespace-nowrap px-3 py-2.5 text-xs font-bold text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-100 transition-colors"
             id="btn-form-cancel"
           >
             キャンセル
           </button>
           <button
             type="submit"
-            className="px-5 py-2 text-xs font-bold bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-950 hover:bg-zinc-800 dark:hover:bg-zinc-200 rounded-xl shadow-sm transition-all flex items-center gap-1.5"
+            className="whitespace-nowrap px-5 py-2.5 text-sm font-bold bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-950 hover:bg-zinc-800 dark:hover:bg-zinc-200 rounded-xl shadow-sm transition-all flex items-center gap-1.5"
             id="btn-form-submit"
           >
             <Check className="w-3.5 h-3.5" />
-            保存する
+            保存
           </button>
         </div>
 

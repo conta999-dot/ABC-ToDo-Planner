@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.conta999.abctodoplanner',
-  appName: 'ABC Planner',
+  appName: 'ABC ToDo Planner',
   webDir: 'dist',
   android: {
     allowMixedContent: false,
