@@ -1,4 +1,4 @@
-package com.conta999.abcplanner;
+package com.conta999.abctodoplanner;
 
 import android.os.Bundle;
 

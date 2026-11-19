@@ -4,7 +4,7 @@
 
 - アプリ名: **ABC Planner**
 - Google Play 掲載名（予定）: **ABC ToDo Planner**
-- パッケージ ID: `com.conta999.abcplanner`
+- パッケージ ID: `com.conta999.abctodoplanner`
 - バージョン: 0.3.0
 - Firebase プロジェクト: `abc-todo-planner-1b179`
 - PC 版: https://conta999-dot.github.io/ABC-ToDo-Planner/

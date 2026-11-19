@@ -1,7 +1,7 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.conta999.abcplanner',
+  appId: 'com.conta999.abctodoplanner',
   appName: 'ABC Planner',
   webDir: 'dist',
   android: {

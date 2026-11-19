@@ -7,10 +7,10 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "com.conta999.abcplanner"
+    namespace = "com.conta999.abctodoplanner"
     compileSdk = rootProject.ext.compileSdkVersion
     defaultConfig {
-        applicationId "com.conta999.abcplanner"
+        applicationId "com.conta999.abctodoplanner"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 4

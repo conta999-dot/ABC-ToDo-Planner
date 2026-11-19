@@ -1,4 +1,4 @@
-package com.conta999.abcplanner;
+package com.conta999.abctodoplanner;
 
 import android.app.Activity;
 import android.content.Intent;
@@ -192,7 +192,7 @@ public class LoopbackAuthPlugin extends Plugin {
             }
             Intent intent = new Intent(activity, MainActivity.class);
             intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            intent.setData(android.net.Uri.parse("com.conta999.abcplanner://auth-complete"));
+            intent.setData(android.net.Uri.parse("com.conta999.abctodoplanner://auth-complete"));
             activity.startActivity(intent);
         });
     }
@@ -220,8 +220,8 @@ public class LoopbackAuthPlugin extends Plugin {
             + "</head><body><div>"
             + "<p style=\"font-size:18px;font-weight:700;\">ログインしました</p>"
             + "<p>この画面を閉じて、ABC Planner に戻ってください。</p>"
-            + "<p><a href=\"com.conta999.abcplanner://auth-complete\">アプリに戻る</a></p>"
-            + "</div><script>setTimeout(function(){location.replace('com.conta999.abcplanner://auth-complete');},300);</script></body></html>";
+            + "<p><a href=\"com.conta999.abctodoplanner://auth-complete\">アプリに戻る</a></p>"
+            + "</div><script>setTimeout(function(){location.replace('com.conta999.abctodoplanner://auth-complete');},300);</script></body></html>";
     }
 
     private void stopServerInternal() {
