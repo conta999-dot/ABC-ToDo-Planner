@@ -33,9 +33,7 @@ const stripUndefined = (task: Task): Record<string, unknown> => {
   };
   // カレンダーのエクスポート記録（任意項目。古いデータには無い）
   if (task.calendarExported) payload.calendarExported = true;
-  if (task.calendarExports && Object.keys(task.calendarExports).length > 0) {
-    payload.calendarExports = task.calendarExports;
-  }
+  if (task.calendarExportedAt) payload.calendarExportedAt = task.calendarExportedAt;
   return payload;
 };
 
@@ -61,10 +59,7 @@ const fromFirestore = (data: Record<string, unknown>, fallbackId: string): Task 
     updatedAt: (data.updatedAt as string) || new Date().toISOString(),
     copiedFromId: (data.copiedFromId as string | null) || undefined,
     calendarExported: data.calendarExported === true ? true : undefined,
-    calendarExports:
-      data.calendarExports && typeof data.calendarExports === 'object'
-        ? (data.calendarExports as Task['calendarExports'])
-        : undefined,
+    calendarExportedAt: typeof data.calendarExportedAt === 'string' ? data.calendarExportedAt : undefined,
   };
 };
 

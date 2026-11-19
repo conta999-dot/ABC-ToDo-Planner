@@ -210,9 +210,9 @@ const checkAndCreateNextDayCopy = (
     completedDate: '',
     reminderNotified: false,
     copiedFromId: sourceId,
-    // エクスポート記録は元タスクの予定を指すので、コピーには引き継がない
+    // エクスポート済みフラグはコピーに引き継がない（コピーは別タスクとして完了時にエクスポート）
     calendarExported: undefined,
-    calendarExports: undefined,
+    calendarExportedAt: undefined,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -782,7 +782,7 @@ export default function App() {
       return;
     }
     if (calendarTargets.length === 0) {
-      alert('エクスポートできる完了タスクがありません。');
+      alert('エクスポートする完了タスクはありません。');
       return;
     }
     let list = deviceCalendars;
@@ -799,9 +799,9 @@ export default function App() {
     if (target.id !== selectedCalendarId) setSelectedCalendarId(target.id);
     const calLabel = `${target.displayName}${target.accountName && target.accountName !== target.displayName ? `（${target.accountName}）` : ''}`;
     if (!window.confirm(
-      `完了したタスク ${calendarTargets.length} 件を、カレンダー「${calLabel}」に時間指定なしの予定として登録します。\n\n` +
-      '・すでに登録済みのタスクは、内容が変わっていれば更新し、同じならスキップします（重複登録はしません）。\n' +
+      `まだエクスポートしていない完了タスク ${calendarTargets.length} 件を、カレンダー「${calLabel}」に時間指定なしの予定として登録します。\n\n` +
       '・予定の日付は「完了日」（未入力なら実施予定日）です。\n' +
+      '・登録できたタスクには「カレンダー登録済」の印が付き、以後そのタスクを編集・削除してもカレンダーの予定は変わりません。\n' +
       '・Googleアカウントのカレンダーなら、Googleカレンダー側の同期でクラウドにも反映されます。\n\nよろしいですか？'
     )) {
       return;
@@ -811,17 +811,18 @@ export default function App() {
     try {
       const outcome = await exportCompletedTasksToDeviceCalendar(tasks, calendarPrefix, target.id);
       const r = outcome.summary;
-      // エクスポート記録（エクスポートフラグ・予定ID）をタスクに保存（Firestore で他の端末にも同期）
-      if (outcome.recordUpdates.size > 0) {
+      // 登録できたタスクにエクスポート済みフラグを立てる（Firestore で他の端末にも同期）
+      if (outcome.exportedTaskIds.length > 0) {
         const stamp = new Date().toISOString();
+        const ids = new Set(outcome.exportedTaskIds);
         const latest = getLocalTasks();
         const base = latest.length > 0 ? latest : tasks;
-        updateTasksState(base.map((t) => {
-          const rec = outcome.recordUpdates.get(t.id);
-          return rec ? { ...t, calendarExported: true, calendarExports: rec, updatedAt: stamp } : t;
-        }));
+        updateTasksState(base.map((t) => (
+          ids.has(t.id) ? { ...t, calendarExported: true, calendarExportedAt: stamp, updatedAt: stamp } : t
+        )));
       }
-      const summary = `新規登録 ${r.created} 件・更新 ${r.updated} 件・スキップ ${r.skipped} 件${r.failed ? `・失敗 ${r.failed} 件` : ''}`;
+      const summary = `登録 ${r.created} 件${r.failed ? `（失敗 ${r.failed} 件）` : ''}${
+        outcome.cleanedLegacy ? `・以前の版で登録済みの予定 ${outcome.cleanedLegacy} 件を引き継ぎ` : ''}`;
       setExportSummary(summary);
       if (r.failed) {
         setErrorDialog({ title: 'エクスポートの一部が失敗しました', message: summary, detail: (r.errors || []).join('\n') });
@@ -2368,7 +2369,7 @@ export default function App() {
               ) : (
               <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl flex flex-col gap-3">
                 <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
-                  完了したタスクだけを、この端末のカレンダーに時間指定なし（終日）の予定として登録します。Googleアカウントのカレンダーを選べば、Googleカレンダーの同期でクラウドにも反映されます。予定の日付は完了日（未入力なら実施予定日）、予定の詳細にはタスクの「メモ・詳細」だけが入ります（カレンダーに余計な情報は書き込みません）。登録済みかどうかはアプリ側のタスクに記録するので、2回目以降は変わったタスクだけ更新し、重複登録はしません。
+                  完了したタスクだけを、この端末のカレンダーに時間指定なし（終日）の予定として登録します。Googleアカウントのカレンダーを選べば、Googleカレンダーの同期でクラウドにも反映されます。予定の日付は完了日（未入力なら実施予定日）、予定の詳細にはタスクの「メモ・詳細」だけが入ります（カレンダーに余計な情報は書き込みません）。登録できたタスクには「カレンダー登録済」の印が付き、次回からは対象外になります（重複登録しません）。印が付いたタスクを後で編集・削除しても、カレンダーの予定は変わりません。
                 </p>
                 <div>
                   <label className="block text-xs font-bold text-zinc-600 dark:text-zinc-300 mb-1" htmlFor="calendar-select">
@@ -2437,7 +2438,7 @@ export default function App() {
                     {isExporting ? 'エクスポート中…' : 'カレンダーへエクスポート'}
                   </button>
                   <span className="text-[0.8125rem] font-semibold text-zinc-500 dark:text-zinc-400">
-                    対象: 完了タスク {calendarTargets.length} 件
+                    未エクスポートの完了タスク: {calendarTargets.length} 件
                   </span>
                 </div>
                 {exportSummary && (

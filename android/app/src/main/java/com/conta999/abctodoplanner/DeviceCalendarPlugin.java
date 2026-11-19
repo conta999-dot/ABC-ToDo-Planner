@@ -33,8 +33,8 @@ import java.util.regex.Pattern;
  * Google アカウントのカレンダーを選べば、同期は Google カレンダー側（端末の同期機能）が行う。
  * ネットワーク通信は一切しない。
  *
- * 予定には目印を入れない。どのタスクをどの予定（_id）に書いたかは、アプリ側のタスクの
- * レコード（calendarExports）に保存し、次回はその予定IDで探して更新・スキップを決める。
+ * 予定には目印を入れず、新規登録だけを行う。登録済みかどうかはアプリ側のタスクの
+ * エクスポート済みフラグで管理し、登録後の予定には一切触らない（更新・削除しない）。
  */
 @CapacitorPlugin(
     name = "DeviceCalendar",
@@ -148,25 +148,14 @@ public class DeviceCalendarPlugin extends Plugin {
         return v;
     }
 
-    /** 指定カレンダーに、削除されていない予定 _id が存在するか */
-    private static boolean eventExists(ContentResolver cr, long calendarId, long eventId) {
-        String selection = CalendarContract.Events._ID + " = ? AND "
-            + CalendarContract.Events.CALENDAR_ID + " = ? AND "
-            + CalendarContract.Events.DELETED + " = 0";
-        String[] args = new String[] { String.valueOf(eventId), String.valueOf(calendarId) };
-        try (Cursor c = cr.query(CalendarContract.Events.CONTENT_URI, new String[] { CalendarContract.Events._ID }, selection, args, null)) {
-            return c != null && c.moveToFirst();
-        }
-    }
-
     /**
-     * 予定の登録・更新。予定には目印を入れない（説明欄はタスクのメモだけ）。
-     * どの予定がどのタスクかは、アプリ側（タスクのレコード）に保存した予定ID（eventId）で管理する。
-     * events[]: { taskId, title, description, date, eventId?（前回登録した予定ID）, changed（内容が前回と違うか） }
-     * 戻り値 results[]: { taskId, status: created|updated|skipped|failed, eventId, error? }
+     * 予定の新規登録だけを行う（更新・削除・検索はしない）。
+     * どのタスクを登録済みかは、アプリ側のタスクの「エクスポート済みフラグ」で管理する。
+     * events[]: { taskId, title, description, date }
+     * 戻り値 results[]: { taskId, status: created|failed, error? }
      */
     @PluginMethod
-    public void upsertEvents(PluginCall call) {
+    public void insertEvents(PluginCall call) {
         if (!hasCalendarPermission()) {
             call.reject("Calendar permission not granted", CODE_PERMISSION);
             return;
@@ -194,39 +183,14 @@ public class DeviceCalendarPlugin extends Plugin {
                     JSONObject ev = events.getJSONObject(i);
                     taskId = ev.getString("taskId");
                     r.put("taskId", taskId);
-                    String title = ev.optString("title", "");
-                    String description = ev.optString("description", "").trim();
-                    long start = utcMidnight(ev.getString("date"));
-                    String eventIdStr = ev.optString("eventId", "");
-                    boolean changed = ev.optBoolean("changed", true);
-                    ContentValues v = eventValues(title, description, start);
-
-                    long existingId = -1;
-                    if (!eventIdStr.isEmpty()) {
-                        try {
-                            long id = Long.parseLong(eventIdStr);
-                            if (eventExists(cr, calendarId, id)) existingId = id;
-                        } catch (NumberFormatException ignored) {
-                            // 不正なIDは未登録扱い
-                        }
-                    }
-                    if (existingId >= 0) {
-                        if (!changed) {
-                            r.put("status", "skipped");
-                        } else {
-                            Uri uri = ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, existingId);
-                            if (cr.update(uri, v, null, null) <= 0) throw new IllegalStateException("update returned 0");
-                            r.put("status", "updated");
-                        }
-                        r.put("eventId", String.valueOf(existingId));
-                    } else {
-                        // 未登録、または前回の予定がカレンダーから削除されていた → 新規登録
-                        v.put(CalendarContract.Events.CALENDAR_ID, calendarId);
-                        Uri inserted = cr.insert(CalendarContract.Events.CONTENT_URI, v);
-                        if (inserted == null) throw new IllegalStateException("insert returned null");
-                        r.put("status", "created");
-                        r.put("eventId", String.valueOf(ContentUris.parseId(inserted)));
-                    }
+                    ContentValues v = eventValues(
+                        ev.optString("title", ""),
+                        ev.optString("description", "").trim(),
+                        utcMidnight(ev.getString("date")));
+                    v.put(CalendarContract.Events.CALENDAR_ID, calendarId);
+                    Uri inserted = cr.insert(CalendarContract.Events.CONTENT_URI, v);
+                    if (inserted == null) throw new IllegalStateException("insert returned null");
+                    r.put("status", "created");
                 } catch (SecurityException e) {
                     call.reject("Calendar permission not granted", CODE_PERMISSION, e);
                     return;

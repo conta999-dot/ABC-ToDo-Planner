@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { X, Calendar, Bell, Info, Check, Trash2 } from 'lucide-react';
+import { X, Calendar, CalendarCheck, Bell, Info, Check, Trash2 } from 'lucide-react';
 import { Task, PriorityLetter, TaskStatus, getTaskQuadrant, TASK_STATUS_OPTIONS } from '../types';
 import { getLocalDateString } from '../lib/dates';
 
@@ -260,6 +260,13 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
             </select>
           </div>
         </div>
+
+        {task?.calendarExported && (
+          <div className="-mt-2 text-[0.8125rem] font-semibold text-emerald-700 dark:text-emerald-400 flex items-center gap-1" id="task-calendar-exported">
+            <CalendarCheck className="w-3.5 h-3.5" />
+            カレンダー登録済{task.calendarExportedAt ? `（${new Date(task.calendarExportedAt).toLocaleDateString('ja-JP')}）` : ''}
+          </div>
+        )}
 
         {/* 自動判定の領域（説明は (i) ボタンを押したときだけ表示） */}
         <div className="-mt-2">
