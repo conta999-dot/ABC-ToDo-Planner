@@ -11,9 +11,6 @@ const config: CapacitorConfig = {
     LocalNotifications: {
       iconColor: '#18181b',
     },
-    FirebaseAuthentication: {
-      skipNativeAuth: false,
-    },
   },
 };
 

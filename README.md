@@ -5,25 +5,30 @@
 - アプリ名: **ABC Planner**
 - Google Play 掲載名（予定）: **ABC ToDo Planner**
 - パッケージ ID: `com.conta999.abcplanner`
-- バージョン: 0.1.0
+- バージョン: 0.2.0
 
 PC のブラウザと Android アプリで、同じ Google アカウントにログインすると Firestore で双方向同期します。未ログイン時は、その端末内にだけ保存します。
 
-Web 版は Firebase の Web 用クライアント設定（`firebase-applet-config.json`）を使います。これはブラウザ公開を前提としたクライアントキーで、リポジトリに含めています。キーストアやパスワードは含めていません。
+Web 版は Firebase の Web 用クライアント設定（`firebase-applet-config.json`）を使います。これはブラウザ公開を前提としたクライアントキーで、リポジトリに含めています。キーストアやパスワード、`google-services.json` は含めていません。
 
-## 必要要件（Firebase コンソールでユーザーが行う作業）
+## ログインの仕組み
 
-このリポジトリからは Firebase へのデプロイを行いません。同期と Android の Google ログインを有効にするには、プロジェクト `possible-retina-6mln4`（または移行先の Firebase プロジェクト）で次を実施してください。
+- **PC（ブラウザ）**: Firebase Auth の Google ポップアップで、その場で選んだアカウントにログインします。
+- **Android**: `google-services.json` をアプリに入れてビルドする方式は使いません。ログイン時にシステムのブラウザ（Chrome Custom Tabs）で Google の公式ログイン画面を開き、選んだアカウントの ID トークンを `signInWithCredential` で Firebase Auth に渡します。戻り先は端末内の `http://127.0.0.1:41827/auth/callback` です。Google ドライブのバックアップ用トークンは、必要なときに同じ流れで取得します。
+
+## 必要要件（一度だけ、Firebase / Google Cloud コンソール）
+
+このリポジトリからは Firebase へのデプロイを行いません。同期と Android の Google ログインを有効にするには、プロジェクト `possible-retina-6mln4` で次を実施してください。
 
 1. Firestore を **Native モード** で有効化する。
 2. `firestore.rules` の内容を公開する（各ユーザーは `users/{uid}/**` だけ読み書きできるルール）。
 3. Authentication で Google ログインを有効にする（Web ではすでに使っている場合あり）。
-4. Android アプリを追加する。
-   - パッケージ名: `com.conta999.abcplanner`
-   - SHA-1 / SHA-256 はリリースキーの指紋を登録する（デバッグ用に使う場合はデバッグ鍵の指紋も追加）。
-5. 必要なら `google-services.json` をダウンロードし、`android/app/google-services.json` に置く。  
-   初回の APK は Web 用設定だけで Firestore を初期化するため、このファイルがなくてもビルドはできます。ただし **Android のネイティブ Google ログインは、コンソールで Android アプリと SHA-1 を登録するまで使えません。**
-6. 承認済みドメインに、使う Web のドメインと `localhost` を追加する。
+4. 承認済みドメインに、使う Web のドメインと `localhost`、必要なら `127.0.0.1` を追加する。
+5. **Android のログイン用（重要）**: Google Cloud Console の「API とサービス」→「認証情報」で、Firebase の Google ログインが使っている **ウェブ アプリケーション** の OAuth クライアントを開き、承認済みのリダイレクト URI に次を追加する。
+   - `http://127.0.0.1:41827/auth/callback`
+   - クライアント ID の目安: `732782608365-qooa5q4opd01vd1qr0bdb60su5ck0m7a.apps.googleusercontent.com`（Firebase が自動作成したウェブ用クライアント）
+
+Android アプリを Firebase に追加したり、SHA-1 を登録したり、`google-services.json` をビルドに入れたりする必要はありません。
 
 ## 開発
 

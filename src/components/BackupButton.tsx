@@ -147,9 +147,9 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
   // 手動同期処理
   const handleManualSync = async () => {
     try {
-      const token = await getAccessToken();
+      const token = await getAccessToken({ interactive: true });
       if (!token) {
-        throw new Error('アクセストークンが見つかりません。再ログインしてください。');
+        throw new Error('Googleドライブ用の許可がありません。表示されたGoogleの画面で許可してください。');
       }
       await handleSync(token);
     } catch (err: any) {

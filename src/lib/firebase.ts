@@ -10,7 +10,9 @@ import {
 } from 'firebase/auth';
 import { initializeFirestore, persistentLocalCache } from 'firebase/firestore';
 import { Capacitor } from '@capacitor/core';
+import { Browser } from '@capacitor/browser';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { LOOPBACK_AUTH_PATH, LOOPBACK_AUTH_PORT, LOOPBACK_CONTINUE_URI, LoopbackAuth } from './loopbackAuth';
 
 const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
@@ -19,8 +21,16 @@ export const db = initializeFirestore(app, {
   localCache: persistentLocalCache(),
 });
 
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+const OAUTH_SCOPES = [
+  'openid',
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile',
+  DRIVE_SCOPE,
+].join(' ');
+
 export const provider = new GoogleAuthProvider();
-provider.addScope('https://www.googleapis.com/auth/drive.file');
+provider.addScope(DRIVE_SCOPE);
 provider.addScope('https://www.googleapis.com/auth/userinfo.email');
 provider.addScope('https://www.googleapis.com/auth/userinfo.profile');
 
@@ -43,21 +53,95 @@ export const initAuth = (
   });
 };
 
-const signInWithNativeGoogle = async (): Promise<{ user: User; accessToken: string | null } | null> => {
+const createAuthUri = async (continueUri: string): Promise<{ authUri: string; sessionId: string }> => {
+  const response = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:createAuthUri?key=${encodeURIComponent(firebaseConfig.apiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        continueUri,
+        providerId: 'google.com',
+        authType: 'signInWithRedirect',
+        oauthScope: OAUTH_SCOPES,
+      }),
+    }
+  );
+  const data = await response.json() as { authUri?: string; sessionId?: string; error?: { message?: string } };
+  if (!response.ok || !data.authUri || !data.sessionId) {
+    throw new Error(data.error?.message || 'Googleログイン用のURLを作成できませんでした。');
+  }
+  return { authUri: data.authUri, sessionId: data.sessionId };
+};
+
+const signInWithIdp = async (requestUri: string, sessionId: string) => {
+  const response = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:signInWithIdp?key=${encodeURIComponent(firebaseConfig.apiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        requestUri,
+        sessionId,
+        returnSecureToken: true,
+        returnIdpCredential: true,
+      }),
+    }
+  );
+  const data = await response.json() as {
+    error?: { message?: string };
+    oauthIdToken?: string;
+    oauthAccessToken?: string;
+    idToken?: string;
+  };
+  if (!response.ok) {
+    throw new Error(data.error?.message || 'Googleアカウントでの認証に失敗しました。');
+  }
+  return data;
+};
+
+const signInWithSystemBrowser = async (): Promise<{ user: User; accessToken: string | null }> => {
+  const started = await LoopbackAuth.start({
+    port: LOOPBACK_AUTH_PORT,
+    path: LOOPBACK_AUTH_PATH,
+  });
+  const continueUri = started.continueUri || LOOPBACK_CONTINUE_URI;
   try {
-    const { FirebaseAuthentication } = await import('@capacitor-firebase/authentication');
-    const result = await FirebaseAuthentication.signInWithGoogle();
-    const idToken = result.credential?.idToken;
-    if (!idToken) {
+    const { authUri, sessionId } = await createAuthUri(continueUri);
+    await Browser.open({ url: authUri });
+    const { requestUri } = await LoopbackAuth.waitForCallback({ timeoutMs: 180000 });
+    try {
+      await Browser.close();
+    } catch {
+      // Custom Tabs may already have been dismissed.
+    }
+
+    const callback = new URL(requestUri);
+    const oauthError = callback.searchParams.get('error');
+    if (oauthError) {
+      if (oauthError === 'access_denied') {
+        throw new Error('ログインがキャンセルされました。');
+      }
+      throw new Error(`Googleログインに失敗しました（${oauthError}）。`);
+    }
+    if (!callback.searchParams.get('code') && !callback.searchParams.get('id_token')) {
+      throw new Error('Googleからの認証結果を受け取れませんでした。');
+    }
+
+    const idp = await signInWithIdp(requestUri, sessionId);
+    if (!idp.oauthIdToken) {
       throw new Error('Google IDトークンを取得できませんでした。');
     }
-    const credential = GoogleAuthProvider.credential(idToken, result.credential?.accessToken);
+    const credential = GoogleAuthProvider.credential(idp.oauthIdToken, idp.oauthAccessToken);
     const userCred = await signInWithCredential(auth, credential);
-    cachedAccessToken = result.credential?.accessToken ?? null;
+    cachedAccessToken = idp.oauthAccessToken ?? null;
     return { user: userCred.user, accessToken: cachedAccessToken };
-  } catch (error) {
-    console.warn('ネイティブGoogleログインに失敗したため、Web方式を試します:', error);
-    return null;
+  } finally {
+    try {
+      await LoopbackAuth.stop();
+    } catch {
+      // ignore
+    }
   }
 };
 
@@ -66,10 +150,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     isSigningIn = true;
 
     if (Capacitor.isNativePlatform()) {
-      const nativeResult = await signInWithNativeGoogle();
-      if (nativeResult) {
-        return nativeResult;
-      }
+      return await signInWithSystemBrowser();
     }
 
     const result = await signInWithPopup(auth, provider);
@@ -84,19 +165,18 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
   }
 };
 
-export const getAccessToken = async (): Promise<string | null> => {
+export const getAccessToken = async (options?: { interactive?: boolean }): Promise<string | null> => {
+  if (cachedAccessToken) {
+    return cachedAccessToken;
+  }
+  if (options?.interactive && Capacitor.isNativePlatform() && auth.currentUser) {
+    const result = await signInWithSystemBrowser();
+    return result.accessToken;
+  }
   return cachedAccessToken;
 };
 
 export const logout = async () => {
-  if (Capacitor.isNativePlatform()) {
-    try {
-      const { FirebaseAuthentication } = await import('@capacitor-firebase/authentication');
-      await FirebaseAuthentication.signOut();
-    } catch (error) {
-      console.warn('ネイティブログアウトをスキップしました:', error);
-    }
-  }
   await signOut(auth);
   cachedAccessToken = null;
 };

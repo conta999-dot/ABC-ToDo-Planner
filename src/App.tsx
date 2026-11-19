@@ -2113,7 +2113,7 @@ export default function App() {
               <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl text-[11px] font-semibold text-zinc-500 dark:text-zinc-400 leading-relaxed space-y-1">
                 <div>アプリ名: ABC Planner（Google Play 掲載名: ABC ToDo Planner）</div>
                 <div>データストレージ: この端末のキャッシュ ＋ Google アカウントでログインするとクラウド同期</div>
-                <div>バージョン: 0.1.0</div>
+                <div>バージョン: 0.2.0</div>
               </div>
             </div>
 
