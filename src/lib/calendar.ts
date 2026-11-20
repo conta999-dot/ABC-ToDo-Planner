@@ -112,6 +112,8 @@ interface DeviceCalendarPlugin {
   findAppEvents(options: { prefix: string; calendarId?: string }): Promise<{ events: AppEventInfo[] }>;
   deleteEvents(options: { eventIds: string[] }): Promise<{ deleted: number; errors: string[] }>;
   cleanLegacyMarkers(options: { calendarId: string }): Promise<{ adopted: { taskId: string; eventId: string }[] }>;
+  refreshCalendars(): Promise<{ accounts: { accountName: string; accountType: string }[] }>;
+  enableCalendarSync(options: { calendarId: string }): Promise<{ updated: number }>;
 }
 
 const DeviceCalendar = registerPlugin<DeviceCalendarPlugin>('DeviceCalendar');
@@ -120,7 +122,106 @@ export const isCalendarExportAvailable = () => Capacitor.getPlatform() === 'andr
 
 export const CALENDAR_PREFIX_STORAGE_KEY = 'abc_calendar_prefix';
 export const CALENDAR_ID_STORAGE_KEY = 'abc_calendar_id';
-export const DEFAULT_CALENDAR_PREFIX = '[ABC]';
+export const DEFAULT_CALENDAR_PREFIX = '［ToDo］';
+/** 以前の既定値（保存値がこれなら新しい既定値に置き換える。利用者が変えた値はそのまま） */
+export const LEGACY_DEFAULT_PREFIXES = ['[ABC]', '[ToDo]'];
+/** 予定を探すときは、以前の既定値で登録した予定も対象にする */
+export const loadCalendarPrefix = (): string => {
+  try {
+    const saved = localStorage.getItem(CALENDAR_PREFIX_STORAGE_KEY);
+    if (saved === null || LEGACY_DEFAULT_PREFIXES.includes(saved)) {
+      localStorage.setItem(CALENDAR_PREFIX_STORAGE_KEY, DEFAULT_CALENDAR_PREFIX);
+      return DEFAULT_CALENDAR_PREFIX;
+    }
+    return saved;
+  } catch {
+    return DEFAULT_CALENDAR_PREFIX;
+  }
+};
+
+/** Google カレンダーの「新しいカレンダーを作成」画面 */
+export const GOOGLE_CREATE_CALENDAR_URL = 'https://calendar.google.com/calendar/r/settings/createcalendar';
+
+export type CalendarGroupKind = 'google' | 'local' | 'other';
+export interface CalendarGroup {
+  key: string;
+  kind: CalendarGroupKind;
+  label: string;
+  accountName: string;
+  accountType: string;
+  calendars: DeviceCalendarInfo[];
+}
+
+const ACCOUNT_TYPE_LABELS: Record<string, string> = {
+  'com.google': 'Google',
+  LOCAL: '端末内（ローカル・同期なし）',
+  'com.samsung.android.calendar': 'Samsung',
+  'com.osp.app.signin': 'Samsung',
+  'com.android.exchange': 'Exchange',
+  'com.google.android.gm.exchange': 'Exchange（Gmail）',
+  'com.microsoft.office.outlook.USER_ACCOUNT': 'Outlook',
+};
+
+export const calendarKind = (c: Pick<DeviceCalendarInfo, 'accountType'>): CalendarGroupKind =>
+  c.accountType === 'com.google' ? 'google' : c.accountType === 'LOCAL' ? 'local' : 'other';
+
+export const accountTypeLabel = (type: string): string => ACCOUNT_TYPE_LABELS[type] || type || '不明';
+
+/** カレンダーをアカウントごとにまとめる（Google → 端末内 → その他） */
+export const groupCalendars = (calendars: DeviceCalendarInfo[], email?: string | null): CalendarGroup[] => {
+  const map = new Map<string, CalendarGroup>();
+  for (const c of calendars) {
+    const kind = calendarKind(c);
+    const key = `${c.accountType}\n${c.accountName}`;
+    let g = map.get(key);
+    if (!g) {
+      const typeLabel = accountTypeLabel(c.accountType);
+      const label = kind === 'local' ? typeLabel : `${typeLabel}（${c.accountName}）`;
+      g = { key, kind, label, accountName: c.accountName, accountType: c.accountType, calendars: [] };
+      map.set(key, g);
+    }
+    g.calendars.push(c);
+  }
+  const order: Record<CalendarGroupKind, number> = { google: 0, local: 1, other: 2 };
+  const own = (email || '').toLowerCase();
+  return [...map.values()]
+    .map((g) => ({ ...g, calendars: [...g.calendars].sort((a, b) => Number(b.isPrimary) - Number(a.isPrimary) || a.displayName.localeCompare(b.displayName, 'ja')) }))
+    .sort((a, b) =>
+      order[a.kind] - order[b.kind] ||
+      Number(b.accountName.toLowerCase() === own) - Number(a.accountName.toLowerCase() === own) ||
+      a.label.localeCompare(b.label, 'ja'));
+};
+
+export const calendarGroupKey = (c: Pick<DeviceCalendarInfo, 'accountType' | 'accountName'>) => `${c.accountType}\n${c.accountName}`;
+
+const normName = (s: string) => (s || '').normalize('NFKC').trim().toLowerCase();
+
+/** 入力したカレンダー名に一致するカレンダー（選んだアカウントを優先、表記ゆれは全角半角・大小文字を無視） */
+export const findCalendarByName = (calendars: DeviceCalendarInfo[], name: string, preferGroupKey?: string): DeviceCalendarInfo | undefined => {
+  const n = normName(name);
+  if (!n) return undefined;
+  const hits = calendars.filter((c) => normName(c.displayName) === n);
+  return hits.find((c) => preferGroupKey && calendarGroupKey(c) === preferGroupKey) || hits.find((c) => calendarKind(c) === 'google') || hits[0];
+};
+
+/** 端末のカレンダーアカウントに同期を依頼（Google で作ったカレンダーを端末に取り込む） */
+export const refreshDeviceCalendars = async (): Promise<number> => {
+  try {
+    const { accounts } = await DeviceCalendar.refreshCalendars();
+    return accounts.length;
+  } catch (error) {
+    throw toCalendarError(error, '同期の依頼');
+  }
+};
+
+/** 選んだカレンダーの同期と表示をオンにする */
+export const enableCalendarSync = async (calendarId: string): Promise<void> => {
+  try {
+    await DeviceCalendar.enableCalendarSync({ calendarId });
+  } catch (error) {
+    throw toCalendarError(error, '同期の設定');
+  }
+};
 
 export const PERMISSION_GUIDE =
   'カレンダーへのアクセスが許可されていません。次の手順で許可してから、もう一度お試しください。\n' +
@@ -290,10 +391,20 @@ export const exportCompletedTasksToDeviceCalendar = async (tasks: Task[], prefix
 
 /** このアプリの形式（プレフィックスで始まる終日予定）の予定を探す。読むだけ。calendarId を省くと全カレンダー */
 export const findAppEvents = async (prefix: string, calendarId?: string): Promise<AppEventInfo[]> => {
-  if (!prefix.trim()) return [];
+  const prefixes = [...new Set([prefix, ...LEGACY_DEFAULT_PREFIXES].filter((p) => p.trim()))];
+  if (prefixes.length === 0) return [];
   try {
-    const { events } = await DeviceCalendar.findAppEvents({ prefix, calendarId });
-    return events.filter((e) => e.allDay);
+    const seen = new Set<string>();
+    const out: AppEventInfo[] = [];
+    for (const p of prefixes) {
+      const { events } = await DeviceCalendar.findAppEvents({ prefix: p, calendarId });
+      for (const e of events) {
+        if (!e.allDay || seen.has(String(e.eventId))) continue;
+        seen.add(String(e.eventId));
+        out.push(e);
+      }
+    }
+    return out.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   } catch (error) {
     throw toCalendarError(error, '予定の検索');
   }

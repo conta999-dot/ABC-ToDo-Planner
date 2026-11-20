@@ -1,7 +1,7 @@
 {
   "name": "abc-planner",
   "private": true,
-  "version": "0.6.1",
+  "version": "0.6.2",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
@@ -18,8 +18,10 @@
     "@capacitor/browser": "^8.0.1",
     "@capacitor/cli": "^8.6.2",
     "@capacitor/core": "^8.6.2",
+    "@capacitor/filesystem": "^8.1.5",
     "@capacitor/local-notifications": "^8.3.1",
     "@capacitor/network": "^8.0.1",
+    "@capacitor/share": "^8.0.3",
     "canvas-confetti": "^1.6.0",
     "express": "^5.2.1",
     "firebase": "^12.15.0",

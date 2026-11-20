@@ -2,6 +2,49 @@ import { Task } from '../types';
 
 const BACKUP_FILE_NAME = 'abc_planner_backup.json';
 
+export type DriveError = Error & { code?: string; detail?: string; status?: number; reason?: string };
+
+/** Drive API のエラー応答から原因（HTTP 状態・reason）を取り出して、分かりやすいメッセージにする */
+export async function toDriveError(response: Response, action: string): Promise<DriveError> {
+  const raw = await response.text().catch(() => '');
+  let reason = '';
+  let apiMessage = '';
+  try {
+    const j = JSON.parse(raw);
+    apiMessage = j?.error?.message || '';
+    reason =
+      j?.error?.errors?.[0]?.reason ||
+      (j?.error?.details || []).find((d: { reason?: string }) => d?.reason)?.reason ||
+      j?.error?.status ||
+      '';
+  } catch {
+    apiMessage = raw.slice(0, 300);
+  }
+  const status = response.status;
+  let message = `Google Driveの${action}に失敗しました。`;
+  let code = 'DRIVE_FAILED';
+  if (status === 403 && /accessNotConfigured|SERVICE_DISABLED/i.test(reason + ' ' + apiMessage)) {
+    code = 'DRIVE_API_DISABLED';
+    message = `Google Driveの${action}に失敗しました。\n原因: このアプリの Google Cloud プロジェクトで「Google Drive API」が有効になっていません（アプリ側では直せない、サーバー側の設定です）。\nタスクのデータは Firestore のクラウド同期で端末間に同期されているので、日常の利用には影響ありません。`;
+  } else if (status === 401) {
+    code = 'DRIVE_UNAUTHORIZED';
+    message = `Google Driveの${action}に失敗しました。\n原因: Googleドライブ用の許可（トークン）が無効か期限切れです。もう一度「今すぐ同期実行」を押し、表示されたGoogleの画面で許可してください。`;
+  } else if (status === 403 && /insufficient|SCOPE/i.test(reason + ' ' + apiMessage)) {
+    code = 'DRIVE_SCOPE';
+    message = `Google Driveの${action}に失敗しました。\n原因: Googleドライブへのアクセスが許可されていません。もう一度「今すぐ同期実行」を押し、表示されたGoogleの画面で許可してください。`;
+  } else if (status === 429 || /rateLimit|userRateLimit/i.test(reason)) {
+    code = 'DRIVE_RATE_LIMIT';
+    message = `Google Driveの${action}に失敗しました（短時間に操作が集中しました）。少し待ってからもう一度お試しください。`;
+  }
+  const e = new Error(message) as DriveError;
+  e.code = code;
+  e.status = status;
+  e.reason = reason;
+  e.detail = `HTTP ${status}${reason ? ` ${reason}` : ''}${apiMessage ? `: ${apiMessage}` : ''}`;
+  console.error(`Google Drive ${action}エラー:`, e.detail);
+  return e;
+}
+
 export interface DriveFileInfo {
   id: string;
   name: string;
@@ -23,9 +66,7 @@ export async function findBackupFile(accessToken: string): Promise<DriveFileInfo
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Google Driveファイル検索エラー:', errorText);
-    throw new Error('Google Driveのファイル検索に失敗しました。');
+    throw await toDriveError(response, 'ファイル検索');
   }
 
   const data = await response.json();
@@ -49,9 +90,7 @@ export async function downloadBackupFile(accessToken: string, fileId: string): P
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Google Driveファイルダウンロードエラー:', errorText);
-    throw new Error('Google Driveからのデータ読み込みに失敗しました。');
+    throw await toDriveError(response, 'データ読み込み');
   }
 
   const text = await response.text();
@@ -86,9 +125,7 @@ export async function createBackupFile(accessToken: string, tasks: Task[]): Prom
   });
 
   if (!metadataResponse.ok) {
-    const errorText = await metadataResponse.text();
-    console.error('Google Driveファイル作成(メタデータ)エラー:', errorText);
-    throw new Error('Google Drive上のファイル作成に失敗しました。');
+    throw await toDriveError(metadataResponse, 'ファイル作成');
   }
 
   const fileInfo = await metadataResponse.json();
@@ -115,9 +152,7 @@ export async function updateBackupFile(accessToken: string, fileId: string, task
   });
 
   if (!response.ok) {
-    const errorText = await response.text();
-    console.error('Google Driveファイル更新エラー:', errorText);
-    throw new Error('Google Drive上のデータの更新に失敗しました。');
+    throw await toDriveError(response, 'データ更新');
   }
 }
 

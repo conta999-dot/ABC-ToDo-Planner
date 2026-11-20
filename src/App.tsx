@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import confetti from 'canvas-confetti';
 import {
   Plus,
@@ -46,7 +46,13 @@ import {
   PERMISSION_GUIDE,
   CALENDAR_PREFIX_STORAGE_KEY,
   CALENDAR_ID_STORAGE_KEY,
-  DEFAULT_CALENDAR_PREFIX,
+  loadCalendarPrefix,
+  groupCalendars,
+  calendarGroupKey,
+  findCalendarByName,
+  refreshDeviceCalendars,
+  enableCalendarSync,
+  GOOGLE_CREATE_CALENDAR_URL,
   eventDateOf,
   loadExportHistory,
   findAppEvents,
@@ -55,6 +61,7 @@ import {
   ExportHistoryEntry,
 } from './lib/calendar';
 import { errorDetail } from './lib/nativeGoogleAuth';
+import { Browser } from '@capacitor/browser';
 import { subscribeToUserTasks, pushUserTasks } from './lib/sync';
 import { mergeTasks } from './lib/drive';
 
@@ -433,14 +440,7 @@ export default function App() {
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
   // Googleカレンダーへのエクスポート
-  const [calendarPrefix, setCalendarPrefix] = useState<string>(() => {
-    try {
-      const saved = localStorage.getItem(CALENDAR_PREFIX_STORAGE_KEY);
-      return saved === null ? DEFAULT_CALENDAR_PREFIX : saved;
-    } catch {
-      return DEFAULT_CALENDAR_PREFIX;
-    }
-  });
+  const [calendarPrefix, setCalendarPrefix] = useState<string>(() => loadCalendarPrefix());
   const [isExporting, setIsExporting] = useState(false);
   const [deviceCalendars, setDeviceCalendars] = useState<DeviceCalendarInfo[] | null>(null);
   const [calendarPermission, setCalendarPermission] = useState<'unknown' | 'granted' | 'denied'>('unknown');
@@ -456,6 +456,11 @@ export default function App() {
   const [appEvents, setAppEvents] = useState<AppEventInfo[] | null>(null);
   const [appEventSelection, setAppEventSelection] = useState<Set<string>>(new Set());
   const [isSearchingEvents, setIsSearchingEvents] = useState(false);
+  // 登録先カレンダー: 種類（アカウント）の絞り込みと、名前の自由入力
+  const [calendarGroupFilter, setCalendarGroupFilter] = useState<string>('');
+  const [calendarNameInput, setCalendarNameInput] = useState('');
+  const [calendarNameStatus, setCalendarNameStatus] = useState<{ kind: 'ok' | 'notfound' | 'info'; text: string } | null>(null);
+  const [isRefreshingCalendars, setIsRefreshingCalendars] = useState(false);
   // ビルドバージョン（Android はアプリ情報、Web はビルド時に埋め込んだ値）
   const [appVersionLabel, setAppVersionLabel] = useState<string>(`${__APP_VERSION__}（Web ビルド ${__BUILD_COMMIT__}・${__BUILD_TIME__}）`);
   const authUserRef = useRef<User | null>(null);
@@ -840,6 +845,78 @@ export default function App() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentView]);
+
+  const calendarGroups = useMemo(() => groupCalendars(deviceCalendars || [], authUser?.email), [deviceCalendars, authUser?.email]);
+  const selectedCalendar = (deviceCalendars || []).find((c) => c.id === selectedCalendarId);
+  const activeGroupKey = calendarGroupFilter || (selectedCalendar ? calendarGroupKey(selectedCalendar) : calendarGroups[0]?.key || '');
+  const activeGroup = calendarGroups.find((g) => g.key === activeGroupKey) || calendarGroups[0];
+
+  /** 名前を入力してカレンダーを選ぶ（端末にあればそれを使う。なければ作り方を案内） */
+  const handleApplyCalendarName = (listOverride?: DeviceCalendarInfo[] | null) => {
+    const name = calendarNameInput.trim();
+    if (!name) {
+      setCalendarNameStatus({ kind: 'info', text: 'カレンダー名を入力してください。' });
+      return;
+    }
+    const list = listOverride || deviceCalendars || [];
+    const hit = findCalendarByName(list, name, activeGroup?.key);
+    if (hit) {
+      setSelectedCalendarId(hit.id);
+      setCalendarGroupFilter(calendarGroupKey(hit));
+      setCalendarNameStatus({
+        kind: 'ok',
+        text: `「${hit.displayName}」（${hit.accountName}）を登録先にしました。${hit.syncEvents === false ? '\nこのカレンダーは端末で同期がオフです。下の「同期をオンにする」を押してください。' : ''}`,
+      });
+    } else {
+      setCalendarNameStatus({
+        kind: 'notfound',
+        text: `「${name}」というカレンダーはこの端末にありません。\nこのアプリから Google カレンダーに新しいカレンダーを作ることはできないため（Google の審査が必要な権限になるため）、次の手順で一度だけ作成してください。`,
+      });
+    }
+  };
+
+  const handleOpenCreateCalendar = async () => {
+    try {
+      if (Capacitor.isNativePlatform()) await Browser.open({ url: GOOGLE_CREATE_CALENDAR_URL });
+      else window.open(GOOGLE_CREATE_CALENDAR_URL, '_blank', 'noopener');
+    } catch {
+      window.open(GOOGLE_CREATE_CALENDAR_URL, '_blank');
+    }
+  };
+
+  /** 端末のカレンダーアカウントに同期を依頼して、一覧を読み直す */
+  const handleRefreshCalendars = async () => {
+    setIsRefreshingCalendars(true);
+    try {
+      const granted = await ensureCalendarPermission();
+      if (!granted) {
+        showCalendarPermissionGuide();
+        return;
+      }
+      await refreshDeviceCalendars();
+      // 同期が終わるまで少し待ってから読み直す（間に合わなければもう一度押す）
+      await new Promise((r) => setTimeout(r, 4000));
+      const list = await loadDeviceCalendars(false);
+      if (list && calendarNameInput.trim()) handleApplyCalendarName(list);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'カレンダー一覧を再読込できませんでした。';
+      setErrorDialog({ title: 'カレンダーの再読込エラー', message, detail: error instanceof CalendarError ? error.detail : errorDetail(error) });
+    } finally {
+      setIsRefreshingCalendars(false);
+    }
+  };
+
+  const handleEnableCalendarSync = async () => {
+    if (!selectedCalendar) return;
+    try {
+      await enableCalendarSync(selectedCalendar.id);
+      await loadDeviceCalendars(false);
+      showToast(`「${selectedCalendar.displayName}」の同期をオンにしました`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : '同期をオンにできませんでした。';
+      setErrorDialog({ title: 'カレンダーの同期設定エラー', message, detail: error instanceof CalendarError ? error.detail : errorDetail(error) });
+    }
+  };
 
   /** 完了タスクを端末のカレンダーへ終日予定としてエクスポート（Android のみ） */
   const handleExportCalendar = async () => {
@@ -1360,14 +1437,14 @@ export default function App() {
 
       {errorDialog && (
         <div
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+          className="modal-backdrop fixed inset-0 z-[100] flex items-center justify-center p-4"
           onClick={() => setErrorDialog(null)}
           role="dialog"
           aria-modal="true"
           id="error-detail-dialog"
         >
           <div
-            className="w-full max-w-md rounded-2xl bg-white dark:bg-zinc-900 p-5 shadow-xl border border-zinc-200 dark:border-zinc-700"
+            className="modal-card w-full max-w-md rounded-2xl p-5"
             onClick={(e) => e.stopPropagation()}
           >
             <h2 className="text-lg font-bold text-amber-600 dark:text-amber-400 mb-2">⚠ {errorDialog.title}</h2>
@@ -1622,12 +1699,12 @@ export default function App() {
 
             {quadrantPopup && (
               <div
-                className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 animate-fade-in"
+                className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
                 id="quadrant-popup-modal"
                 onClick={() => setQuadrantPopup(null)}
               >
                 <div
-                  className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-sm w-full p-5 shadow-xl relative"
+                  className="modal-card rounded-2xl max-w-sm w-full p-5 relative"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <div className="flex justify-between items-start mb-3">
@@ -1801,12 +1878,12 @@ export default function App() {
 
             {showDailyHelp && (
               <div
-                className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 animate-fade-in"
+                className="modal-backdrop fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in"
                 id="daily-help-modal"
                 onClick={() => setShowDailyHelp(false)}
               >
                 <div
-                  className="bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-2xl max-w-lg w-full p-5 shadow-xl"
+                  className="modal-card rounded-2xl max-w-lg w-full p-5"
                   onClick={(e) => e.stopPropagation()}
                 >
                   <div className="flex justify-between items-start mb-3">
@@ -1945,18 +2022,123 @@ export default function App() {
                     登録先のカレンダー
                   </label>
                   {deviceCalendars && deviceCalendars.length > 0 ? (
-                    <select
-                      id="calendar-select"
-                      value={selectedCalendarId}
-                      onChange={(e) => setSelectedCalendarId(e.target.value)}
-                      className="w-full px-3 py-2 text-sm bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none font-semibold"
-                    >
-                      {deviceCalendars.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.displayName}{c.accountName && c.accountName !== c.displayName ? `（${c.accountName}）` : ''}{c.isPrimary ? ' ★' : ''}{c.syncEvents === false ? '（同期オフ）' : ''}{c.visible === false ? '（非表示）' : ''}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="flex flex-col gap-2" id="calendar-picker">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <div>
+                          <label className="block text-[0.75rem] font-bold text-zinc-500 dark:text-zinc-400 mb-0.5" htmlFor="calendar-group-select">カレンダーの種類（アカウント）</label>
+                          <select
+                            id="calendar-group-select"
+                            value={activeGroup?.key || ''}
+                            onChange={(e) => {
+                              const g = calendarGroups.find((x) => x.key === e.target.value);
+                              setCalendarGroupFilter(e.target.value);
+                              if (g && !g.calendars.some((c) => c.id === selectedCalendarId)) {
+                                const def = g.calendars.find((c) => c.isPrimary && c.syncEvents !== false) || g.calendars.find((c) => c.syncEvents !== false) || g.calendars[0];
+                                if (def) setSelectedCalendarId(def.id);
+                              }
+                            }}
+                            className="w-full px-3 py-2 text-sm bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl focus:outline-none font-semibold"
+                          >
+                            {(['google', 'local', 'other'] as const).map((kind) => {
+                              const groups = calendarGroups.filter((g) => g.kind === kind);
+                              if (groups.length === 0) return null;
+                              return (
+                                <optgroup key={kind} label={kind === 'google' ? 'Google アカウント（Googleカレンダーと同期）' : kind === 'local' ? '端末内（同期しない）' : 'その他のアカウント'}>
+                                  {groups.map((g) => (
+                                    <option key={g.key} value={g.key}>{g.label}・{g.calendars.length}件</option>
+                                  ))}
+                                </optgroup>
+                              );
+                            })}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="block text-[0.75rem] font-bold text-zinc-500 dark:text-zinc-400 mb-0.5" htmlFor="calendar-select">カレンダー</label>
+                          <select
+                            id="calendar-select"
+                            value={activeGroup?.calendars.some((c) => c.id === selectedCalendarId) ? selectedCalendarId : ''}
+                            onChange={(e) => {
+                              setSelectedCalendarId(e.target.value);
+                              setCalendarNameStatus(null);
+                            }}
+                            className="w-full px-3 py-2 text-sm bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl focus:outline-none font-semibold"
+                          >
+                            {!activeGroup?.calendars.some((c) => c.id === selectedCalendarId) && <option value="" disabled>選んでください</option>}
+                            {(activeGroup?.calendars || []).map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.displayName}{c.isPrimary ? ' ★' : ''}{c.syncEvents === false ? '（同期オフ）' : ''}{c.visible === false ? '（非表示）' : ''}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      {selectedCalendar && (
+                        <div className="text-[0.8125rem] font-semibold text-zinc-600 dark:text-zinc-300 break-all" id="calendar-selected-label">
+                          登録先: {selectedCalendar.displayName}（{selectedCalendar.accountType === 'LOCAL' ? '端末内・同期なし' : `${selectedCalendar.accountType === 'com.google' ? 'Google' : selectedCalendar.accountType}${selectedCalendar.accountName !== selectedCalendar.displayName ? `・${selectedCalendar.accountName}` : ''}`}）
+                          {selectedCalendar.syncEvents === false && selectedCalendar.accountType !== 'LOCAL' && (
+                            <span className="block mt-1 text-amber-700 dark:text-amber-400">
+                              このカレンダーは端末で同期がオフのため、Googleカレンダーに反映されません。
+                              <button type="button" onClick={() => void handleEnableCalendarSync()} className="ml-1 underline font-bold" id="btn-enable-calendar-sync">同期をオンにする</button>
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      <div>
+                        <label className="block text-[0.75rem] font-bold text-zinc-500 dark:text-zinc-400 mb-0.5" htmlFor="calendar-name-input">カレンダー名を入力して選ぶ</label>
+                        <div className="flex gap-2">
+                          <input
+                            id="calendar-name-input"
+                            type="text"
+                            list="calendar-name-options"
+                            value={calendarNameInput}
+                            onChange={(e) => {
+                              setCalendarNameInput(e.target.value);
+                              setCalendarNameStatus(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') handleApplyCalendarName();
+                            }}
+                            placeholder="例: ToDo完了"
+                            maxLength={60}
+                            className="flex-1 min-w-0 px-3 py-2 text-sm bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-xl focus:outline-none font-semibold"
+                          />
+                          <datalist id="calendar-name-options">
+                            {[...new Set(deviceCalendars.map((c) => c.displayName))].map((n) => <option key={n} value={n} />)}
+                          </datalist>
+                          <button type="button" onClick={() => handleApplyCalendarName()} className="px-3 py-2 rounded-xl text-xs font-bold bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 flex-none" id="btn-apply-calendar-name">
+                            この名前で選ぶ
+                          </button>
+                        </div>
+                        {calendarNameStatus && (
+                          <div
+                            className={`mt-2 p-3 rounded-xl text-[0.8125rem] font-semibold whitespace-pre-line ${calendarNameStatus.kind === 'ok' ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300' : calendarNameStatus.kind === 'notfound' ? 'bg-amber-50 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200 border border-amber-300 dark:border-amber-700' : 'bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200'}`}
+                            id="calendar-name-status"
+                          >
+                            {calendarNameStatus.text}
+                            {calendarNameStatus.kind === 'notfound' && (
+                              <>
+                                <ol className="list-decimal ml-5 mt-2 space-y-0.5">
+                                  <li>下の「Googleカレンダーで作成」を押す（ブラウザで Google カレンダーの「新しいカレンダーを作成」が開きます）</li>
+                                  <li>登録先にしたい Google アカウント（例: {authUser?.email || 'ご自分のGmail'}）でログインしていることを確認（右上のアイコン）</li>
+                                  <li>「名前」に「{calendarNameInput.trim()}」と入力し、「カレンダーを作成」を押す</li>
+                                  <li>このアプリに戻り「カレンダー一覧を再読込」を押す（出てこなければ1分ほど待ってもう一度）</li>
+                                  <li>一覧に出たら、もう一度「この名前で選ぶ」を押す（同期オフと出たら「同期をオンにする」を押す）</li>
+                                </ol>
+                                <div className="flex flex-wrap gap-2 mt-2">
+                                  <button type="button" onClick={() => void handleOpenCreateCalendar()} className="px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 text-white" id="btn-open-create-calendar">Googleカレンダーで作成</button>
+                                  <button type="button" onClick={() => void handleRefreshCalendars()} disabled={isRefreshingCalendars} className="px-3 py-1.5 rounded-lg text-xs font-bold border border-zinc-400 dark:border-zinc-500 disabled:opacity-50" id="btn-refresh-calendars-inline">{isRefreshingCalendars ? '再読込中…' : 'カレンダー一覧を再読込'}</button>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <div>
+                        <button type="button" onClick={() => void handleRefreshCalendars()} disabled={isRefreshingCalendars} className="px-3 py-1.5 rounded-lg text-xs font-bold border border-zinc-300 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200 disabled:opacity-50" id="btn-refresh-calendars">
+                          {isRefreshingCalendars ? '再読込中…' : 'カレンダー一覧を再読込'}
+                        </button>
+                      </div>
+                    </div>
                   ) : deviceCalendars && deviceCalendars.length === 0 ? (
                     <div className="text-[0.8125rem] font-semibold text-amber-700 dark:text-amber-400">
                       書き込みできるカレンダーが見つかりません。Googleカレンダーアプリを開いて、Googleアカウントのカレンダーが表示されることを確認してください。
@@ -1981,7 +2163,7 @@ export default function App() {
                     type="text"
                     value={calendarPrefix}
                     onChange={(e) => setCalendarPrefix(e.target.value)}
-                    placeholder="例: [ABC]"
+                    placeholder="例: ［ToDo］"
                     maxLength={30}
                     className="w-full px-3 py-2 text-sm bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-1 focus:ring-zinc-900 dark:focus:ring-zinc-200 font-semibold"
                   />

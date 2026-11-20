@@ -2,10 +2,12 @@ import React, { useRef, useState, useEffect } from 'react';
 import { Download, Upload, Cloud, RefreshCw, LogOut, CheckCircle, ShieldAlert } from 'lucide-react';
 import { Task, PriorityLetter, TaskQuadrant } from '../types';
 import { getLocalDateString, newTaskId } from '../lib/dates';
-import { initAuth, googleSignIn, logout as googleLogout, getAccessToken } from '../lib/firebase';
+import { initAuth, googleSignIn, logout as googleLogout, getAccessToken, clearDriveToken } from '../lib/firebase';
 import { errorDetail } from '../lib/nativeGoogleAuth';
 import { findBackupFile, downloadBackupFile, createBackupFile, updateBackupFile, mergeTasks } from '../lib/drive';
 import { User } from 'firebase/auth';
+import { Capacitor } from '@capacitor/core';
+import { saveTextFile } from '../lib/fileExport';
 
 interface BackupButtonProps {
   tasks: Task[];
@@ -39,6 +41,12 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
 
   // 自動同期の無限ループ防止用。最後に処理したタスク配列のJSON文字列
   const lastProcessedTasksJson = useRef<string>('');
+  // Drive API が使えない（サーバー側の設定）と分かったら、自動同期はこのセッション中は試さない
+  const driveUnavailable = useRef(false);
+  const noteDriveError = (err: any) => {
+    if (err?.code === 'DRIVE_UNAUTHORIZED') clearDriveToken();
+    if (err?.code === 'DRIVE_API_DISABLED') driveUnavailable.current = true;
+  };
 
   // 1. Authの初期化
   useEffect(() => {
@@ -55,7 +63,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
 
   // 2. タスクが変化した際の自動同期（自動保存）
   useEffect(() => {
-    if (!user || !autoSync || isSyncing) return;
+    if (!user || !autoSync || isSyncing || driveUnavailable.current) return;
 
     const currentTasksJson = JSON.stringify(tasks);
     // すでに処理済み、または同期等により渡されたタスクと全く同一であれば何もしない
@@ -107,6 +115,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
         setTimeout(() => setSyncSuccess(false), 3000);
       } catch (err: any) {
         console.error('自動同期エラー:', err);
+        noteDriveError(err);
         setSyncError(withDetail(err, '自動同期中にエラーが発生しました。'));
       } finally {
         setIsSyncing(false);
@@ -154,6 +163,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
 
   // 手動同期処理
   const handleManualSync = async () => {
+    driveUnavailable.current = false;
     try {
       const token = await getAccessToken({ interactive: true });
       if (!token) {
@@ -207,6 +217,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
       localStorage.setItem('abc_planner_drive_last_sync_time', nowStr);
     } catch (err: any) {
       console.error('同期エラー:', err);
+      noteDriveError(err);
       setSyncError(withDetail(err, 'データの同期中にエラーが発生しました。'));
     } finally {
       setIsSyncing(false);
@@ -219,30 +230,43 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
     localStorage.setItem('abc_planner_drive_auto_sync_enabled', String(checked));
   };
 
-  // JSON Export
-  const handleExportJSON = () => {
-    const dataStr = JSON.stringify(tasks, null, 2);
-    const blob = new Blob([dataStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `abc_planner_tasks_${getLocalDateString()}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+  const [fileMessage, setFileMessage] = useState<{ ok: boolean; text: string } | null>(null);
+  const stamp = () => {
+    const d = new Date();
+    const p2 = (n: number) => String(n).padStart(2, '0');
+    return `${getLocalDateString()}_${p2(d.getHours())}${p2(d.getMinutes())}`;
   };
 
-  // CSV Export
+  const saveFile = async (fileName: string, text: string, mime: string) => {
+    setFileMessage(null);
+    try {
+      const r = await saveTextFile(fileName, text, mime);
+      if (r.savedPath) {
+        setFileMessage({ ok: true, text: `保存しました: ${r.savedPath}${r.shared ? '\n（共有メニューから Googleドライブ・メール等にも保存できます）' : ''}` });
+      } else if (r.shared) {
+        setFileMessage({ ok: true, text: `共有メニューを開きました（${fileName}）。保存先（ドライブ・ファイル等）を選んでください。` });
+      } else {
+        setFileMessage({ ok: true, text: `${fileName} をダウンロードしました。` });
+      }
+    } catch (e: any) {
+      setFileMessage({ ok: false, text: withDetail(e, 'ファイルを保存できませんでした。') });
+    }
+  };
+
+  // JSON Export（全項目そのまま。読込で完全に戻せる）
+  const handleExportJSON = () => {
+    void saveFile(`abc_planner_tasks_${stamp()}.json`, JSON.stringify(tasks, null, 2), 'application/json');
+  };
+
+  // CSV Export（Excel 互換。読込時に元へ戻せるよう完了日・更新日時・カレンダー登録済も出力）
+  const CSV_HEADERS = ['ID', 'タイトル', 'メモ', '優先度(英字)', '優先度(数字)', '領域', '期限', '通知時間', '通知有効', 'ステータス', '完了日時', '作成日時', '完了日', '更新日時', 'カレンダー登録済', 'カレンダー登録日時'];
   const handleExportCSV = () => {
-    const headers = ['ID', 'タイトル', 'メモ', '優先度(英字)', '優先度(数字)', '領域', '期限', '通知時間', '通知有効', 'ステータス', '完了日時', '作成日時'];
-    
     const rows = tasks.map((task) => [
       task.id,
       task.title,
       task.notes || '',
       task.priorityLetter || '',
-      task.priorityNumber || '',
+      task.priorityNumber ?? '',
       task.quadrant,
       task.dueDate,
       task.reminderTime || '',
@@ -250,131 +274,148 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
       task.status || 'pending',
       task.completedAt || '',
       task.createdAt,
+      task.completedDate || '',
+      task.updatedAt || '',
+      task.calendarExported ? '1' : '0',
+      task.calendarExportedAt || '',
     ]);
-
     const csvContent = [
-      headers.join(','),
+      CSV_HEADERS.join(','),
       ...rows.map((row) => row.map((val) => `"${String(val).replace(/"/g, '""')}"`).join(',')),
-    ].join('\n');
+    ].join('\r\n');
+    void saveFile(`abc_planner_tasks_${stamp()}.csv`, '\uFEFF' + csvContent, 'text/csv;charset=utf-8');
+  };
 
-    const blob = new Blob(['\uFEFF' + csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `abc_planner_tasks_${getLocalDateString()}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+  /** CSV を行・列に分解（"" のエスケープ、セル内の改行・カンマに対応） */
+  const parseCSV = (text: string): string[][] => {
+    const rows: string[][] = [];
+    let row: string[] = [];
+    let cell = '';
+    let inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (text[i + 1] === '"') { cell += '"'; i++; } else inQuotes = false;
+        } else cell += ch;
+      } else if (ch === '"') inQuotes = true;
+      else if (ch === ',') { row.push(cell); cell = ''; }
+      else if (ch === '\n' || ch === '\r') {
+        if (ch === '\r' && text[i + 1] === '\n') i++;
+        row.push(cell); cell = '';
+        if (row.some((v) => v !== '')) rows.push(row);
+        row = [];
+      } else cell += ch;
+    }
+    row.push(cell);
+    if (row.some((v) => v !== '')) rows.push(row);
+    return rows;
+  };
+
+  const VALID_STATUS = ['pending', 'in_progress', 'completed', 'postponed', 'delegated', 'deleted'];
+
+  const importFromText = (rawText: string, fileName: string) => {
+    const text = rawText.replace(/^\uFEFF/, '');
+    const trimmed = text.trimStart();
+    const existing = new Map(tasks.map((t) => [t.id, t] as const));
+    const nowIso = new Date().toISOString();
+    if (trimmed.startsWith('[') || trimmed.startsWith('{') || /\.json$/i.test(fileName)) {
+      const parsedRaw = JSON.parse(trimmed);
+      const parsed = (Array.isArray(parsedRaw) ? parsedRaw : Array.isArray(parsedRaw?.tasks) ? parsedRaw.tasks : null) as Task[] | null;
+      if (!parsed) {
+        setFileMessage({ ok: false, text: '無効なJSONフォーマットです（タスクの配列ではありません）。' });
+        return;
+      }
+      const validTasks: Task[] = parsed.map((t) => {
+        const status = (t.status || (t.completed ? 'completed' : 'pending')) as Task['status'];
+        return {
+          ...t, // 完了日・エクスポート済みフラグなど、すべての項目をそのまま引き継ぐ
+          id: t.id || newTaskId(),
+          userId: t.userId || 'local-user',
+          title: t.title || '無題のタスク',
+          notes: t.notes || '',
+          priorityLetter: (t.priorityLetter || '') as PriorityLetter,
+          priorityNumber: t.priorityNumber ?? null,
+          quadrant: (t.quadrant || 'IV') as TaskQuadrant,
+          dueDate: t.dueDate || getLocalDateString(),
+          reminderTime: t.reminderTime || '',
+          reminderEnabled: !!t.reminderEnabled,
+          reminderNotified: !!t.reminderNotified,
+          completed: status === 'completed',
+          status,
+          completedAt: t.completedAt || null,
+          createdAt: t.createdAt || nowIso,
+          updatedAt: t.updatedAt || nowIso,
+          calendarExported: !!(t.calendarExported || existing.get(t.id)?.calendarExported) || undefined,
+          calendarExportedAt: t.calendarExportedAt || existing.get(t.id)?.calendarExportedAt,
+        };
+      });
+      onImport(validTasks);
+      setFileMessage({ ok: true, text: `${validTasks.length}個のタスクを読み込みました（同じIDのタスクは更新日時が新しい方を残します）。` });
+      return;
+    }
+
+    const rows = parseCSV(text);
+    if (rows.length <= 1) {
+      setFileMessage({ ok: false, text: 'CSVファイルが空か、ヘッダーのみです。' });
+      return;
+    }
+    const imported: Task[] = [];
+    for (const values of rows.slice(1)) {
+      if (values.length < 2) continue;
+      const id = values[0] || newTaskId();
+      const prev = existing.get(id);
+      const num = values[4] ? parseInt(values[4], 10) : NaN;
+      const status = (VALID_STATUS.includes(values[9]) ? values[9] : 'pending') as Task['status'];
+      const letter = (['A', 'B', 'C'].includes(values[3]) ? values[3] : '') as PriorityLetter;
+      const csvExported = values[14] === '1';
+      imported.push({
+        ...(prev || {}),
+        id,
+        userId: prev?.userId || 'local-user',
+        title: values[1] || '無題のタスク',
+        notes: values[2] || '',
+        priorityLetter: letter,
+        priorityNumber: Number.isNaN(num) ? null : num,
+        quadrant: (['I', 'II', 'III', 'IV'].includes(values[5]) ? values[5] : 'IV') as TaskQuadrant,
+        dueDate: values[6] || getLocalDateString(),
+        reminderTime: values[7] || '',
+        reminderEnabled: values[8] === '1',
+        reminderNotified: prev?.reminderNotified ?? false,
+        completed: status === 'completed',
+        status,
+        completedAt: values[10] || null,
+        createdAt: values[11] || prev?.createdAt || nowIso,
+        completedDate: values[12] || prev?.completedDate,
+        updatedAt: values[13] || nowIso,
+        calendarExported: csvExported || prev?.calendarExported || undefined,
+        calendarExportedAt: values[15] || prev?.calendarExportedAt,
+      } as Task);
+    }
+    if (imported.length > 0) {
+      onImport(imported);
+      setFileMessage({ ok: true, text: `${imported.length}個のタスクをCSVから読み込みました。` });
+    } else {
+      setFileMessage({ ok: false, text: '読み込める行が見つかりませんでした。' });
+    }
   };
 
   // Handle File Import (JSON or CSV)
   const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
+    setFileMessage(null);
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
-        const text = event.target?.result as string;
-        
-        if (file.name.endsWith('.json')) {
-          const parsed = JSON.parse(text) as Task[];
-          if (Array.isArray(parsed)) {
-            const validTasks = parsed.map((t) => ({
-              id: t.id || newTaskId(),
-              userId: t.userId || 'local-user',
-              title: t.title || '無題のタスク',
-              notes: t.notes || '',
-              priorityLetter: (t.priorityLetter || '') as PriorityLetter,
-              priorityNumber: t.priorityNumber || null,
-              quadrant: (t.quadrant || 'IV') as TaskQuadrant,
-              dueDate: t.dueDate || getLocalDateString(),
-              reminderTime: t.reminderTime || '',
-              reminderEnabled: !!t.reminderEnabled,
-              reminderNotified: !!t.reminderNotified,
-              completed: t.status === 'completed' || !!t.completed,
-              status: t.status || (t.completed ? 'completed' : 'pending'),
-              completedAt: t.completedAt || null,
-              createdAt: t.createdAt || new Date().toISOString(),
-              updatedAt: t.updatedAt || new Date().toISOString(),
-              copiedFromId: t.copiedFromId,
-            }));
-            
-            onImport(validTasks);
-            alert(`${validTasks.length}個のタスクをインポートしました！`);
-          } else {
-            alert('無効なJSONフォーマットです。');
-          }
-        } else if (file.name.endsWith('.csv')) {
-          const lines = text.split('\n').map(line => line.trim()).filter(Boolean);
-          if (lines.length <= 1) {
-            alert('CSVファイルが空か、ヘッダーのみです。');
-            return;
-          }
-
-          const imported: Task[] = [];
-          for (let i = 1; i < lines.length; i++) {
-            const regex = /("([^"]*)"|([^,]+))/g;
-            const matches = lines[i].match(regex) || [];
-            const values = matches.map((val) => {
-              let clean = val.trim();
-              if (clean.startsWith('"') && clean.endsWith('"')) {
-                clean = clean.substring(1, clean.length - 1).replace(/""/g, '"');
-              }
-              return clean;
-            });
-
-            if (values.length >= 2) {
-              const id = values[0] || newTaskId();
-              const title = values[1] || '無題のタスク';
-              const notes = values[2] || '';
-              const priorityLetter = (values[3] || '') as any;
-              const priorityNumber = values[4] ? parseInt(values[4], 10) : null;
-              const quadrant = (values[5] || 'IV') as any;
-              const dueDate = values[6] || getLocalDateString();
-              const reminderTime = values[7] || '';
-              const reminderEnabled = values[8] === '1';
-              const status = (values[9] || 'pending') as any;
-              const completedAt = values[10] || null;
-              const createdAt = values[11] || new Date().toISOString();
-
-              imported.push({
-                id,
-                userId: 'local-user',
-                title,
-                notes,
-                priorityLetter,
-                priorityNumber: isNaN(priorityNumber as any) ? null : priorityNumber,
-                quadrant,
-                dueDate,
-                reminderTime,
-                reminderEnabled,
-                reminderNotified: false,
-                completed: status === 'completed',
-                status,
-                completedAt,
-                createdAt,
-                updatedAt: new Date().toISOString(),
-              });
-            }
-          }
-          if (imported.length > 0) {
-            onImport(imported);
-            alert(`${imported.length}個のタスクをCSVからインポートしました！`);
-          } else {
-            alert('インポート可能な行が見つかりませんでした。');
-          }
-        }
-      } catch (e) {
-        console.error('Import error:', e);
-        alert('インポートに失敗しました。ファイルの内容を確認してください。');
+        importFromText(String(event.target?.result ?? ''), file.name || '');
+      } catch (err) {
+        console.error('Import error:', err);
+        setFileMessage({ ok: false, text: '読み込みに失敗しました。JSON または CSV（このアプリで書き出したもの）を選んでください。' });
       }
-      
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      if (fileInputRef.current) fileInputRef.current.value = '';
     };
+    reader.onerror = () => setFileMessage({ ok: false, text: 'ファイルを読み取れませんでした。' });
     reader.readAsText(file);
   };
 
@@ -530,13 +571,26 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
             <input
               ref={fileInputRef}
               type="file"
-              accept=".json,.csv"
+              accept={Capacitor.isNativePlatform() ? 'application/json,text/csv,text/comma-separated-values,text/plain,application/octet-stream,*/*' : '.json,.csv,application/json,text/csv'}
               onChange={handleImportFile}
               className="hidden"
               id="file-import-input"
             />
           </label>
         </div>
+        {fileMessage && (
+          <div
+            className={`mt-3 p-2.5 rounded-lg text-sm font-semibold whitespace-pre-wrap break-all ${fileMessage.ok ? 'bg-emerald-50 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300' : 'bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400'}`}
+            id="local-file-message"
+          >
+            {fileMessage.text}
+          </div>
+        )}
+        {Capacitor.isNativePlatform() && (
+          <p className="mt-2 text-[0.8125rem] font-semibold text-zinc-500 dark:text-zinc-400">
+            書出: 端末の「ドキュメント/ABCToDoPlanner」に保存し、続けて共有メニューが開きます（Googleドライブやメールにも保存できます）。読込: ファイル選択画面で JSON / CSV を選びます。
+          </p>
+        )}
       </div>
     </div>
   );

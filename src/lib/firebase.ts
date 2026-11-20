@@ -2,6 +2,7 @@ import { initializeApp } from 'firebase/app';
 import {
   getAuth,
   signInWithPopup,
+  reauthenticateWithPopup,
   signInWithCredential,
   GoogleAuthProvider,
   onAuthStateChanged,
@@ -32,6 +33,7 @@ provider.setCustomParameters({ prompt: 'select_account' });
 export const isFirebaseAvailable = true;
 
 let cachedAccessToken: string | null = null;
+let cachedAccessTokenAt = 0;
 let isSigningIn = false;
 
 export const initAuth = (
@@ -135,6 +137,7 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     }
     const credential = GoogleAuthProvider.credentialFromResult(result);
     cachedAccessToken = credential?.accessToken ?? null;
+    cachedAccessTokenAt = Date.now();
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: unknown) {
     console.error('サインイン中にエラーが発生しました:', error);
@@ -150,7 +153,20 @@ export const getAccessToken = async (options?: { interactive?: boolean }): Promi
     if (!auth.currentUser) return null;
     return await nativeAuthorizeDrive(!!options?.interactive);
   }
+  // Web: ポップアップで得たトークンはページを開き直すと消え、約1時間で期限切れになる
+  if (cachedAccessToken && Date.now() - cachedAccessTokenAt > 50 * 60 * 1000) cachedAccessToken = null;
+  if (!cachedAccessToken && options?.interactive && auth.currentUser) {
+    // 同じGoogleアカウントでもう一度許可してもらい、Drive 用のトークンを取り直す
+    const result = await reauthenticateWithPopup(auth.currentUser, provider);
+    cachedAccessToken = GoogleAuthProvider.credentialFromResult(result)?.accessToken ?? null;
+    cachedAccessTokenAt = Date.now();
+  }
   return cachedAccessToken;
+};
+
+/** Drive がトークン無効（401）を返したとき、次回は取り直す */
+export const clearDriveToken = () => {
+  cachedAccessToken = null;
 };
 
 export const logout = async () => {

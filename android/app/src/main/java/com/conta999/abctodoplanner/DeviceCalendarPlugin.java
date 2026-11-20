@@ -283,6 +283,87 @@ public class DeviceCalendarPlugin extends Plugin {
         return o;
     }
 
+    /**
+     * 端末にあるカレンダーのアカウント（ローカル以外）すべてに同期を依頼する。
+     * Google カレンダーで新しく作ったカレンダーを端末に取り込むために使う。読み書きはしない。
+     */
+    @PluginMethod
+    public void refreshCalendars(PluginCall call) {
+        if (!hasCalendarPermission()) {
+            call.reject("Calendar permission not granted", CODE_PERMISSION);
+            return;
+        }
+        executor.execute(() -> {
+            java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+            JSArray accounts = new JSArray();
+            try (Cursor c = getContext().getContentResolver().query(
+                CalendarContract.Calendars.CONTENT_URI,
+                new String[] { CalendarContract.Calendars.ACCOUNT_NAME, CalendarContract.Calendars.ACCOUNT_TYPE },
+                null, null, null)) {
+                if (c != null) {
+                    while (c.moveToNext()) {
+                        String name = c.getString(0);
+                        String type = c.getString(1);
+                        if (name == null || type == null || CalendarContract.ACCOUNT_TYPE_LOCAL.equals(type)) continue;
+                        if (!seen.add(type + "\n" + name)) continue;
+                        try {
+                            Bundle extras = new Bundle();
+                            extras.putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true);
+                            extras.putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true);
+                            ContentResolver.requestSync(new Account(name, type), CalendarContract.AUTHORITY, extras);
+                            JSObject a = new JSObject();
+                            a.put("accountName", name);
+                            a.put("accountType", type);
+                            accounts.put(a);
+                        } catch (Exception ignored) {
+                            // ignore
+                        }
+                    }
+                }
+                JSObject ret = new JSObject();
+                ret.put("accounts", accounts);
+                call.resolve(ret);
+            } catch (Exception e) {
+                call.reject("refreshCalendars failed: " + e.getMessage(), "FAILED", e);
+            }
+        });
+    }
+
+    /**
+     * 指定カレンダーの「同期」と「表示」をオンにする（ユーザーがボタンを押したときだけ）。
+     * Google カレンダーアプリの設定で同期をオンにするのと同じ列（SYNC_EVENTS / VISIBLE）だけを変更する。
+     */
+    @PluginMethod
+    public void enableCalendarSync(PluginCall call) {
+        if (!hasCalendarPermission()) {
+            call.reject("Calendar permission not granted", CODE_PERMISSION);
+            return;
+        }
+        String idStr = call.getString("calendarId", "");
+        long calId;
+        try {
+            calId = Long.parseLong(idStr);
+        } catch (Exception e) {
+            call.reject("invalid calendarId", "FAILED");
+            return;
+        }
+        executor.execute(() -> {
+            try {
+                ContentResolver cr = getContext().getContentResolver();
+                ContentValues v = new ContentValues();
+                v.put(CalendarContract.Calendars.SYNC_EVENTS, 1);
+                v.put(CalendarContract.Calendars.VISIBLE, 1);
+                int n = cr.update(ContentUris.withAppendedId(CalendarContract.Calendars.CONTENT_URI, calId), v, null, null);
+                requestCalendarSync(cr, calId);
+                JSObject ret = new JSObject();
+                ret.put("updated", n);
+                call.resolve(ret);
+            } catch (Exception e) {
+                call.reject("enableCalendarSync failed: " + e.getMessage(), "FAILED", e);
+            }
+        });
+    }
+
     private static void requestCalendarSync(ContentResolver cr, long calendarId) {
         try {
             JSObject info = calendarInfo(cr, calendarId);
