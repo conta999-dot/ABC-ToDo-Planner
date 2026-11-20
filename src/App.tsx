@@ -337,6 +337,17 @@ const parsePriorityPrefix = (text: string): { letter: PriorityLetter; number: nu
       return { letter: '', number: n, rest: cut(num[1].length), matched: true, letterOnly: false };
     }
   }
+  // 文中・文末の「B1」「Ｂ２」なども明示指定として扱う（前後が空白か文頭・文末の独立した語だけ）
+  const mid = normalized.match(/(^|[\s　])([A-Ca-c])([0-9]{1,2})(?=[\s　]|$)/);
+  if (mid && mid.index !== undefined) {
+    const n = parseInt(mid[3], 10);
+    if (n >= 1 && n <= 20) {
+      const start = mid.index + mid[1].length;
+      const end = start + 1 + mid[3].length;
+      const rest = (original.substring(0, start) + original.substring(end)).replace(/[\s　]{2,}/g, ' ').trim();
+      return { letter: mid[2].toUpperCase() as PriorityLetter, number: n, rest, matched: true, letterOnly: false };
+    }
+  }
   return { letter: '', number: null, rest: original, matched: false, letterOnly: false };
 };
 
@@ -1122,19 +1133,34 @@ export default function App() {
    *   その先頭トークンはタイトルから取り除く（「A1 | A3 会議」のような二重表示を防ぐ）。
    * - プルダウンが両方「自動」の場合: 従来どおりタイトル先頭から自動判定する。
    */
-  const resolveQuickPriority = (titleText: string): { letter: PriorityLetter; number: number | null; title: string; source: 'manual' | 'auto' | 'none' } => {
+  /** その日（実施予定日）の、指定した重要度の緊急度の最大＋1（削除済みは除く） */
+  const getNextNumberOnDate = (letter: PriorityLetter, date: string, extra: Task[] = []): number => {
+    const nums = [...tasks, ...extra]
+      .filter((t) => t.priorityLetter === letter && t.dueDate === date && t.status !== 'deleted')
+      .map((t) => t.priorityNumber)
+      .filter((n): n is number => typeof n === 'number' && !isNaN(n));
+    return nums.length ? Math.max(...nums) + 1 : 1;
+  };
+
+  /**
+   * 簡易登録の重要度・緊急度（v0.6.4〜）
+   * 1. タスク内容に「B1」「Ｂ２」「a3」などが明示されていればそれを使う（既存と重複してもそのまま）
+   * 2. なければ、重要度・緊急度のプルダウンで選んだ値
+   * 3. どちらもなければ既定値: 重要度 B、緊急度はその日の B の最大＋1（登録するたびに B1, B2, B3…）
+   */
+  const resolveQuickPriority = (titleText: string, date: string = selectedDate): { letter: PriorityLetter; number: number | null; title: string; source: 'manual' | 'auto' | 'default' } => {
     const parsed = parsePriorityPrefix(titleText);
     const manual = quickLetter !== '' || quickNumber !== null;
     const title = parsed.matched && parsed.rest.trim() ? parsed.rest : titleText.trim();
+    if (parsed.matched) {
+      const number = parsed.letterOnly ? (parsed.letter ? getNextNumberOnDate(parsed.letter, date) : null) : parsed.number;
+      return { letter: parsed.letter, number, title, source: 'auto' };
+    }
     if (manual) {
       const number = quickNumber !== null ? quickNumber : (quickLetter ? getNextPriorityNumber(quickLetter) : null);
       return { letter: quickLetter, number, title, source: 'manual' };
     }
-    if (parsed.matched) {
-      const number = parsed.letterOnly ? getNextPriorityNumber(parsed.letter) : parsed.number;
-      return { letter: parsed.letter, number, title, source: 'auto' };
-    }
-    return { letter: '', number: null, title, source: 'none' };
+    return { letter: 'B', number: getNextNumberOnDate('B', date), title, source: 'default' };
   };
 
   // 一覧・簡易登録画面の追加アクション
@@ -1144,7 +1170,7 @@ export default function App() {
 
     // 先に日付表現を抽出して取り除く
     const { dueDate: parsedDate, cleanedText: parsedTitle } = parseDueDateFromText(quickTitle);
-    const resolved = resolveQuickPriority(parsedTitle.trim() || quickTitle.trim());
+    const resolved = resolveQuickPriority(parsedTitle.trim() || quickTitle.trim(), parsedDate || selectedDate);
     const titleText = resolved.title.trim() || parsedTitle.trim() || quickTitle.trim();
 
     const calculatedQ = getTaskQuadrant(resolved.letter, resolved.number);
@@ -2631,7 +2657,8 @@ export default function App() {
 
               {/* 重要度・緊急度の判定結果（入力中のみ表示） */}
               {(() => {
-                const r = resolveQuickPriority(parseDueDateFromText(quickTitle).cleanedText.trim() || quickTitle.trim());
+                const pd = parseDueDateFromText(quickTitle);
+                const r = resolveQuickPriority(pd.cleanedText.trim() || quickTitle.trim(), pd.dueDate || selectedDate);
                 const q = getTaskQuadrant(r.letter, r.number);
                 const qLabel = q === 'I' ? '第Ⅰ領域（必須）' : q === 'II' ? '第Ⅱ領域（自己投資）' : q === 'III' ? '第Ⅲ領域（錯覚）' : '第Ⅳ領域（無駄）';
                 const pr = `${r.letter}${r.number ?? ''}` || 'なし';
@@ -2639,7 +2666,7 @@ export default function App() {
                   return (
                     <div className="hidden sm:flex mt-2 items-center gap-1 text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500">
                       <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
-                      <span>重要度・緊急度が「自動」のときは、先頭の「A3 」などから自動判定します</span>
+                      <span>重要度・緊急度はタスク内容の「A3」「Ｂ２」などが優先。なければプルダウン、どちらもなければ B とその日の次の番号</span>
                     </div>
                   );
                 }
@@ -2647,8 +2674,8 @@ export default function App() {
                   <div className="mt-1.5 sm:mt-2 flex items-center gap-1 text-[0.75rem] sm:text-[0.8125rem] font-bold text-zinc-500 dark:text-zinc-400 truncate" id="quick-priority-hint">
                     <Sparkles className="w-3.5 h-3.5 text-emerald-500 flex-none" />
                     <span className="truncate">
-                      {r.source === 'manual' ? '選択' : r.source === 'auto' ? '自動判定' : '判定'}: {pr}・{qLabel}
-                      {r.source === 'manual' && parsePriorityPrefix(quickTitle).matched ? '（文頭の優先度は使いません）' : ''}
+                      {r.source === 'manual' ? '選択' : r.source === 'auto' ? 'タスク内容の指定' : '既定（B＋その日の次の番号）'}: {pr}・{qLabel}
+                      {r.source === 'auto' && (quickLetter !== '' || quickNumber !== null) ? '（プルダウンより優先）' : ''}
                     </span>
                   </div>
                 );
