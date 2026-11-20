@@ -43,6 +43,20 @@ html.is-web { font-size: 112.5%; }
   html.is-web { font-size: 125%; }
 }
 
+/*
+ * v0.6.7: 画面全体を表示領域の高さに固定し、タスクが多くてもクイック入力欄が画面外に出ないようにする。
+ * 100dvh に対応していない古いブラウザ（Edge/Chrome 107 以前など）では 100vh を使う
+ * （以前は h-[100dvh] だけだったため、古い Edge では高さが決まらずページ全体が伸びていた）
+ */
+.app-shell {
+  height: 100vh;
+}
+@supports (height: 100dvh) {
+  .app-shell {
+    height: 100dvh;
+  }
+}
+
 /* Android のステータスバー・ナビゲーションバーと重ならないようにする（edge-to-edge 対応） */
 .app-shell {
   padding-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));

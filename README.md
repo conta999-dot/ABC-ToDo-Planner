@@ -5,7 +5,7 @@
 - アプリ名: **ABC ToDo Planner**
 - Google Play 掲載名（予定）: **ABC ToDo Planner**
 - パッケージ ID: `com.conta999.abctodoplanner`
-- バージョン: 0.6.6（versionCode 16）
+- バージョン: 0.6.7（versionCode 17）
 - Firebase プロジェクト: `abc-todo-planner-1b179`
 - PC 版: https://conta999-dot.github.io/ABC-ToDo-Planner/
 
@@ -51,6 +51,7 @@ Web 版は Firebase の Web 用クライアント設定（`firebase-applet-confi
 
 - CSS の色は Tailwind v4 の oklch / color-mix に加えて、hex/rgb のフォールバックも出力する（`vite.config.ts` で lightningcss の targets を chrome/edge 87 以上などに設定）。oklch に対応していない Edge / Chrome 110 以前でも、ダークモードの色が崩れない（v0.6.5 以前は、カードだけ灰色・文字が黒・ページ背景が白になっていた）
 - `<meta name="color-scheme" content="light dark">` と、`html` / `html.dark` の `color-scheme` で、スクロールバーや入力欄の明暗をアプリのテーマに合わせる
+- 画面全体の高さは `100dvh`、対応していないブラウザ（Edge/Chrome 107 以前など）では `100vh`（v0.6.7〜）。以前は `100dvh` だけだったため、古い Edge ではタスクが多いとページ全体が伸び、下のクイック入力欄が画面外に出ていた
 - テーマは設定で選んだものを優先し、未設定ならブラウザ（OS）のダーク・ライト設定に従う
 
 ## 通知（v0.6.3〜、v0.6.5 でタスクごとの通知を復活）

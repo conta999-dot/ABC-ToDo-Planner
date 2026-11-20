@@ -1435,7 +1435,7 @@ export default function App() {
   const todayStr = getLocalDateString();
 
   return (
-    <div className="app-shell h-[100dvh] overflow-hidden flex flex-col bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-200" id="matrix-app-container">
+    <div className="app-shell overflow-hidden flex flex-col bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-sans transition-colors duration-200" id="matrix-app-container">
       
       {/* Premium Top Line Accent */}
       <div className="h-1 bg-gradient-to-r from-emerald-500 via-zinc-800 to-amber-500 dark:from-emerald-400 dark:via-zinc-100 dark:to-amber-400" />
