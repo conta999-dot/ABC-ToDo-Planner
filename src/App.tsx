@@ -5,6 +5,8 @@ import {
   Moon,
   Sun,
   ChevronLeft,
+  ChevronsLeft,
+  ChevronsRight,
   ChevronRight,
   ChevronDown,
   Settings,
@@ -1373,10 +1375,12 @@ export default function App() {
   };
 
   // --- Calculate Week Days (from baseDateStr for 7 days) ---
+  // v0.6.9: パソコン幅（横1280px以上）は5日分を横1列、それ以外は今まで通り7日分
+  const dailyDayCount = isXL ? 5 : 7;
   const getWeekDaysList = (baseDateStr: string) => {
     if (!baseDateStr) return [];
     const list = [];
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < dailyDayCount; i++) {
       list.push(addDays(baseDateStr, i));
     }
     return list;
@@ -1384,8 +1388,12 @@ export default function App() {
 
   const weekDays = getWeekDaysList(selectedDate || getLocalDateString());
 
+  // ◀ ▶ は表示している日数ぶん（PC は5日、それ以外は7日）、PC の «1日» は1日ずつ送る
   const handleShiftWeek = (offsetWeeks: number) => {
-    setSelectedDate(addDays(selectedDate || getLocalDateString(), offsetWeeks * 7));
+    setSelectedDate(addDays(selectedDate || getLocalDateString(), offsetWeeks * dailyDayCount));
+  };
+  const handleShiftDays = (days: number) => {
+    setSelectedDate(addDays(selectedDate || getLocalDateString(), days));
   };
 
   // --- v0.6.0: 行内編集（日付・重要度/緊急度）とドラッグ＆ドロップ ---
@@ -1861,7 +1869,7 @@ export default function App() {
           <div className="flex flex-col gap-3 animate-fade-in md:flex-1 md:min-h-0" id="view-daily-weekly-container">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl px-3 py-2 sm:px-4 shadow-xs">
               <div className="flex items-center justify-between md:justify-start gap-3 min-w-0">
-                <h3 className="text-xs font-black tracking-wider text-zinc-400 dark:text-zinc-500 whitespace-nowrap truncate"><span className="hidden sm:inline">7日間の</span>デイリープランナー</h3>
+                <h3 className="text-xs font-black tracking-wider text-zinc-400 dark:text-zinc-500 whitespace-nowrap truncate"><span className="hidden sm:inline">{dailyDayCount}日間の</span>デイリープランナー</h3>
                 <button
                   type="button"
                   onClick={() => setShowDailyHelp(true)}
@@ -1877,23 +1885,47 @@ export default function App() {
                 <button
                   onClick={() => handleShiftWeek(-1)}
                   className="p-1 sm:p-2 rounded-xl border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300"
-                  title="7日前"
-                  aria-label="7日前"
+                  title={`${dailyDayCount}日前`}
+                  aria-label={`${dailyDayCount}日前`}
+                  id="btn-days-prev"
                 >
-                  <ChevronLeft className="w-5 h-5" />
+                  {isXL ? <ChevronsLeft className="w-5 h-5" /> : <ChevronLeft className="w-5 h-5" />}
                 </button>
+                {isXL && (
+                  <button
+                    onClick={() => handleShiftDays(-1)}
+                    className="p-1 sm:p-2 rounded-xl border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300"
+                    title="1日前"
+                    aria-label="1日前"
+                    id="btn-day-prev"
+                  >
+                    <ChevronLeft className="w-5 h-5" />
+                  </button>
+                )}
                 <span className="font-black tracking-tight whitespace-nowrap text-zinc-900 dark:text-zinc-50 text-lg sm:text-2xl xl:text-3xl px-0.5 sm:px-2" id="week-range-label">
                   {fmtRangeDate(weekDays[0])}
                   <span className="mx-1.5 text-zinc-400">〜</span>
-                  {fmtRangeDate(weekDays[6])}
+                  {fmtRangeDate(weekDays[weekDays.length - 1])}
                 </span>
+                {isXL && (
+                  <button
+                    onClick={() => handleShiftDays(1)}
+                    className="p-1 sm:p-2 rounded-xl border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300"
+                    title="1日後"
+                    aria-label="1日後"
+                    id="btn-day-next"
+                  >
+                    <ChevronRight className="w-5 h-5" />
+                  </button>
+                )}
                 <button
                   onClick={() => handleShiftWeek(1)}
                   className="p-1 sm:p-2 rounded-xl border border-zinc-200 dark:border-zinc-700 hover:bg-zinc-100 dark:hover:bg-zinc-800 text-zinc-600 dark:text-zinc-300"
-                  title="7日後"
-                  aria-label="7日後"
+                  title={`${dailyDayCount}日後`}
+                  aria-label={`${dailyDayCount}日後`}
+                  id="btn-days-next"
                 >
-                  <ChevronRight className="w-5 h-5" />
+                  {isXL ? <ChevronsRight className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
                 </button>
                 <button
                   onClick={() => setSelectedDate(getLocalDateString())}
@@ -1909,7 +1941,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className={`grid grid-cols-1 gap-2 md:flex-1 md:min-h-[24rem] ${isXL ? 'md:grid-cols-7 md:grid-rows-1' : 'md:grid-cols-4 md:grid-rows-2'}`} id="weekly-days-grid" data-density={isXL ? dailyDensity : 'normal'}>
+            <div className={`grid grid-cols-1 gap-2 md:flex-1 md:min-h-[24rem] ${isXL ? 'md:grid-cols-5 md:grid-rows-1' : 'md:grid-cols-4 md:grid-rows-2'}`} id="weekly-days-grid" data-density={isXL ? dailyDensity : 'normal'}>
               {weekDays.map((dateStr) => {
                 const isToday = dateStr === todayStr;
                 const jpDay = getJPDayOfWeek(dateStr);
@@ -2048,12 +2080,12 @@ export default function App() {
                     </button>
                   </div>
                   <ul className="list-disc pl-5 space-y-1.5 text-sm text-zinc-600 dark:text-zinc-300 leading-relaxed font-medium">
-                    <li>選んだ日から始まる7日間を並べ、各日に実施予定日が入っているタスクを表示します。◀ ▶ で1週間ずつ移動、「今日」で今日からの7日間に戻ります。</li>
+                    <li>選んだ日から始まる7日間（パソコンの広い画面では5日間）を並べ、各日に実施予定日が入っているタスクを表示します。◀ ▶ で表示している日数ぶん（7日／5日）移動、パソコンの広い画面では内側の ‹ › で1日ずつ移動、「今日」で今日から始まる表示に戻ります。</li>
                     <li>タスクを別の日へドラッグ＆ドロップすると、実施予定日がその日に変わります（スマホは少し長押ししてから動かします）。</li>
                     <li>達成状況・重要度・緊急度はプルダウンでその場で変更できます。日付を押すとカレンダーが開き、日付を変更できます。</li>
                     <li>タスク名を押すと詳細画面が開きます。「予定を作成」でその日の予定を詳細入力で作れます。</li>
                     <li>上の「達成状況」の絞り込みと「期日」の並べ替え（押すたびに昇順・降順）は、ほかのタブと共通です。</li>
-                    <li>パソコンの広い画面では7日を横1列に並べ、タスクを詰めて表示します（日付ボタンは出ないので、日付はドラッグか詳細で変更）。各日の「N件・未完了M」が件数、「▼ スクロールで あとN件」が出たらカードの中をスクロールできます。完了したタスクは「✓ 完了 N件」を押すと表示されます。表示密度と折りたたみは設定で変えられます。</li>
+                    <li>パソコンの広い画面（横1280px以上）では5日を横1列に並べ、タスクを詰めて表示します（日付ボタンを押すとカレンダーで日付を変更できます）。各日の「N件・未完了M」が件数、「▼ スクロールで あとN件」が出たらカードの中をスクロールできます。完了したタスクは「✓ 完了 N件」を押すと表示されます。表示密度と折りたたみは設定で変えられます。</li>
                   </ul>
                   <div className="mt-5 flex justify-end">
                     <button onClick={() => setShowDailyHelp(false)} className="px-4 py-2 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 text-sm font-black rounded-lg">
@@ -2510,7 +2542,7 @@ export default function App() {
                   </div>
                 </div>
                 <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
-                  パソコンの広い画面（横1280px以上）では7日を横1列に並べ、タスクを詰めて表示します。「1行に詰める」は長いタスク名を「…」で省略（マウスを乗せると全文）、「2行まで表示」は2行まで折り返します。この表示では日付ボタンを出さないので、日付はドラッグか詳細画面で変えてください。スマホ・狭い画面は今まで通りです。
+                  パソコンの広い画面（横1280px以上）では5日を横1列に並べ、タスクを詰めて表示します。「1行に詰める」は長いタスク名を「…」で省略（マウスを乗せると全文）、「2行まで表示」は2行まで折り返します。各タスクの日付ボタンからカレンダーで日付を変えられます。スマホ・狭い画面は今まで通り7日分です。
                 </p>
                 <div className="flex items-center justify-between gap-3 pt-1 border-t border-zinc-200/60 dark:border-zinc-800">
                   <label htmlFor="daily-collapse-done-toggle" className="text-sm font-bold text-zinc-700 dark:text-zinc-200 cursor-pointer">
