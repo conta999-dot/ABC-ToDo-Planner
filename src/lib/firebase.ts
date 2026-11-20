@@ -2,7 +2,6 @@ import { initializeApp } from 'firebase/app';
 import {
   getAuth,
   signInWithPopup,
-  reauthenticateWithPopup,
   signInWithCredential,
   GoogleAuthProvider,
   onAuthStateChanged,
@@ -22,18 +21,13 @@ export const db = initializeFirestore(app, {
   localCache: persistentLocalCache(),
 });
 
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
-
 export const provider = new GoogleAuthProvider();
-provider.addScope(DRIVE_SCOPE);
 provider.addScope('https://www.googleapis.com/auth/userinfo.email');
 provider.addScope('https://www.googleapis.com/auth/userinfo.profile');
 provider.setCustomParameters({ prompt: 'select_account' });
 
 export const isFirebaseAvailable = true;
 
-let cachedAccessToken: string | null = null;
-let cachedAccessTokenAt = 0;
 let isSigningIn = false;
 
 export const initAuth = (
@@ -42,9 +36,8 @@ export const initAuth = (
 ) => {
   return onAuthStateChanged(auth, (user) => {
     if (user) {
-      if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
+      if (onAuthSuccess) onAuthSuccess(user, null);
     } else {
-      cachedAccessToken = null;
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -65,25 +58,8 @@ const toFriendlyError = (
   return e;
 };
 
-/** Android: ネイティブ Drive 権限（drive.file）でアクセストークンを取得 */
-const nativeAuthorizeDrive = async (interactive: boolean): Promise<string | null> => {
-  try {
-    const { accessToken } = await NativeGoogleAuth.authorize({ scopes: [DRIVE_SCOPE], interactive });
-    cachedAccessToken = accessToken;
-    return accessToken;
-  } catch (error) {
-    const code = (error as { code?: string } | null)?.code;
-    if (!interactive && code === 'NEED_INTERACTION') return null;
-    if (!interactive) {
-      console.warn('Driveトークンのサイレント取得に失敗:', error);
-      return null;
-    }
-    throw toFriendlyError(error, 'authorize', 'Drive許可');
-  }
-};
-
 /** Android: Credential Manager によるネイティブ Google ログイン */
-const signInWithNativeGoogle = async (): Promise<{ user: User; accessToken: string | null }> => {
+const signInWithNativeGoogle = async (): Promise<{ user: User }> => {
   if (!GOOGLE_WEB_CLIENT_ID || (GOOGLE_WEB_CLIENT_ID as string) === 'REPLACE_ME') {
     throw toFriendlyError({ code: 'MISCONFIGURED', message: 'GOOGLE_WEB_CLIENT_ID is not set' }, 'signIn', 'アプリ設定');
   }
@@ -105,12 +81,10 @@ const signInWithNativeGoogle = async (): Promise<{ user: User; accessToken: stri
     }
     throw toFriendlyError(error, 'signIn', 'Firebaseログイン（signInWithCredential）', friendly);
   }
-  // Drive 権限は付与済みなら静かに取得（未許可なら手動同期時に許可画面を出す）
-  const accessToken = await nativeAuthorizeDrive(false);
-  return { user: userCred.user, accessToken };
+  return { user: userCred.user };
 };
 
-export const googleSignIn = async (): Promise<{ user: User; accessToken: string | null } | null> => {
+export const googleSignIn = async (): Promise<{ user: User } | null> => {
   try {
     isSigningIn = true;
 
@@ -135,38 +109,13 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
                 : 'Googleログインに失敗しました。';
       throw toFriendlyError(error, 'signIn', 'Webログイン（ポップアップ）', friendly);
     }
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    cachedAccessToken = credential?.accessToken ?? null;
-    cachedAccessTokenAt = Date.now();
-    return { user: result.user, accessToken: cachedAccessToken };
+    return { user: result.user };
   } catch (error: unknown) {
     console.error('サインイン中にエラーが発生しました:', error);
     throw error;
   } finally {
     isSigningIn = false;
   }
-};
-
-export const getAccessToken = async (options?: { interactive?: boolean }): Promise<string | null> => {
-  if (Capacitor.isNativePlatform()) {
-    // AuthorizationClient はキャッシュ済みの有効なトークンを返すため毎回問い合わせる
-    if (!auth.currentUser) return null;
-    return await nativeAuthorizeDrive(!!options?.interactive);
-  }
-  // Web: ポップアップで得たトークンはページを開き直すと消え、約1時間で期限切れになる
-  if (cachedAccessToken && Date.now() - cachedAccessTokenAt > 50 * 60 * 1000) cachedAccessToken = null;
-  if (!cachedAccessToken && options?.interactive && auth.currentUser) {
-    // 同じGoogleアカウントでもう一度許可してもらい、Drive 用のトークンを取り直す
-    const result = await reauthenticateWithPopup(auth.currentUser, provider);
-    cachedAccessToken = GoogleAuthProvider.credentialFromResult(result)?.accessToken ?? null;
-    cachedAccessTokenAt = Date.now();
-  }
-  return cachedAccessToken;
-};
-
-/** Drive がトークン無効（401）を返したとき、次回は取り直す */
-export const clearDriveToken = () => {
-  cachedAccessToken = null;
 };
 
 export const logout = async () => {
@@ -178,7 +127,6 @@ export const logout = async () => {
     }
   }
   await signOut(auth);
-  cachedAccessToken = null;
 };
 
 export const isSigningInProgress = () => isSigningIn;

@@ -5,8 +5,6 @@ export interface NativeGoogleAuthPlugin {
   signIn(options: { serverClientId: string }): Promise<{ idToken: string; email?: string; displayName?: string }>;
   /** Credential Manager の状態をクリア（次回アカウント選択を出す） */
   signOut(): Promise<void>;
-  /** AuthorizationClient で指定スコープのアクセストークンを取得 */
-  authorize(options: { scopes: string[]; interactive?: boolean }): Promise<{ accessToken: string }>;
 }
 
 export const NativeGoogleAuth = registerPlugin<NativeGoogleAuthPlugin>('NativeGoogleAuth');

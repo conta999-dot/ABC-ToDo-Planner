@@ -5,7 +5,7 @@
 - アプリ名: **ABC ToDo Planner**
 - Google Play 掲載名（予定）: **ABC ToDo Planner**
 - パッケージ ID: `com.conta999.abctodoplanner`
-- バージョン: 0.6.2（versionCode 12）
+- バージョン: 0.6.3（versionCode 13）
 - Firebase プロジェクト: `abc-todo-planner-1b179`
 - PC 版: https://conta999-dot.github.io/ABC-ToDo-Planner/
 
@@ -43,7 +43,15 @@ Web 版は Firebase の Web 用クライアント設定（`firebase-applet-confi
 - Web: 「JSON書出」「CSV書出」でブラウザのダウンロード
 - Android: アプリ内のブラウザ（WebView）はダウンロードに対応していないため、端末の「ドキュメント/ABCToDoPlanner」に保存し、続けて共有メニュー（Googleドライブ・ファイル・メール等）を開く（`@capacitor/filesystem`、`@capacitor/share`）
 - CSV は完了日・更新日時・カレンダー登録済も出力し、セル内の改行・カンマ・引用符に対応。JSON / CSV の読込はカレンダー登録済フラグを保つ（読込で二重エクスポートにならない）
-- Googleドライブ同期のエラーは、HTTP 状態と原因（例: `accessNotConfigured` = Drive API が無効、401 = 許可の期限切れ）を表示
+- Googleドライブ同期・バックアップは v0.6.3 で廃止（Drive API・drive.file の許可も使わない）。端末間の同期は Firestore で行う
+- Android の自動バックアップ（v0.6.3〜、設定でオン・オフ、既定オン）: その日はじめてアプリを開いた・戻ったときに `ドキュメント/ABCToDoPlanner/ABCToDoPlanner_backup_YYYYMMDD.json` を作成し、その日のうちにタスクを変えたら同じファイルを更新（1日1ファイル）。新しい7日分を残し、古いものは `old` フォルダへ移動（削除しない）。中身は JSON書出と同じ（完了日・カレンダー登録済も含む）で「読込」で戻せる。Web版は手動の書出のみ
+
+## 通知（v0.6.3〜）
+
+- 1日1回、設定した時刻（既定 08:00）に「今日のタスク N件・期限切れ M件」と上位のタスク（重要度・緊急度の順）をまとめて通知。対象がない日は通知しない。設定でオン・オフ（既定オン）
+- タスクごとの通知時刻は廃止（以前の通知時刻のデータは残すが通知しない）
+- Android: 端末内の通知（`@capacitor/local-notifications`）。今日から14日分を予約し、起動・復帰・タスク変更・設定変更のたびに予約し直す。オフにすると予約をすべて取り消す。Android 13 以降は通知の許可（POST_NOTIFICATIONS）を求める。正確な時刻のアラーム権限（SCHEDULE_EXACT_ALARM / USE_EXACT_ALARM）は使わないため、電池節約で数分遅れることがある。サーバー・FCM は不要
+- Web: ページを開いている間だけ、設定時刻を過ぎたら1日1回ブラウザ通知
 
 ## ログインの仕組み
 

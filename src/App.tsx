@@ -29,7 +29,18 @@ import { App as CapApp } from '@capacitor/app';
 
 import { Task, PriorityLetter, TaskQuadrant, TaskStatus, getTaskQuadrant } from './types';
 import { getLocalTasks, saveLocalTasks } from './lib/db';
-import { startReminderScheduler, stopReminderScheduler, requestNotificationPermission, rescheduleNativeReminders } from './lib/reminder';
+import {
+  startReminderScheduler,
+  stopReminderScheduler,
+  requestNotificationPermission,
+  checkNotificationPermission,
+  rescheduleNativeReminders,
+  scheduleDailyNow,
+  isDailyNotifyEnabled,
+  getDailyNotifyTime,
+  setDailyNotifySettings,
+  buildDailySummary,
+} from './lib/reminder';
 import { getLocalDateString, addDays, newTaskId, parseLocalDate } from './lib/dates';
 import { initAuth, googleSignIn, logout as firebaseLogout } from './lib/firebase';
 import {
@@ -63,7 +74,8 @@ import {
 import { errorDetail } from './lib/nativeGoogleAuth';
 import { Browser } from '@capacitor/browser';
 import { subscribeToUserTasks, pushUserTasks } from './lib/sync';
-import { mergeTasks } from './lib/drive';
+import { mergeTasks } from './lib/merge';
+import { isAutoBackupAvailable, runAutoBackup } from './lib/autoBackup';
 
 // Supporting Components (Inlined or imported cleanly)
 import BackupButton from './components/BackupButton';
@@ -405,6 +417,9 @@ export default function App() {
   // UI preferences
   const [darkMode, setDarkMode] = useState(false);
   const [notificationsGranted, setNotificationsGranted] = useState(false);
+  const [dailyNotifyOn, setDailyNotifyOn] = useState<boolean>(() => isDailyNotifyEnabled());
+  const [dailyNotifyTime, setDailyNotifyTime] = useState<string>(() => getDailyNotifyTime());
+  const [dailyNotifyInfo, setDailyNotifyInfo] = useState<string | null>(null);
   const [quadrantPopup, setQuadrantPopup] = useState<(typeof QUADRANT_CONFIGS)[number] | null>(null);
   const [showDailyHelp, setShowDailyHelp] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
@@ -564,9 +579,7 @@ export default function App() {
     }
 
     // 4. Notification permissions check
-    if ('Notification' in window) {
-      setNotificationsGranted(Notification.permission === 'granted');
-    }
+    void checkNotificationPermission().then(setNotificationsGranted);
 
     // 5. Start Reminders Scheduler
     startReminderScheduler((updated) => {
@@ -681,14 +694,37 @@ export default function App() {
     void CapApp.addListener('appStateChange', ({ isActive }) => {
       if (isActive) {
         void rescheduleNativeReminders(getLocalTasks());
+        void runDailyBackup(true);
       }
     }).then((listener) => {
       handle = listener;
     });
+    // 起動時: その日の最初ならバックアップ（読み込みが落ち着くまで少し待つ）
+    const t = setTimeout(() => void runDailyBackup(true), 3000);
     return () => {
       handle?.remove();
+      clearTimeout(t);
     };
   }, []);
+
+  // その日のうちにタスクが変わったら、今日のバックアップファイルを更新（1日1ファイル・30秒まとめて）
+  const backupSkipFirstRef = useRef(true);
+  useEffect(() => {
+    if (!isAutoBackupAvailable()) return;
+    if (backupSkipFirstRef.current) {
+      backupSkipFirstRef.current = false;
+      return;
+    }
+    const t = setTimeout(() => void runDailyBackup(false), 30000);
+    return () => clearTimeout(t);
+  }, [tasks]);
+
+  /** Android の自動バックアップ（端末の ドキュメント/ABCToDoPlanner、1日1ファイル） */
+  async function runDailyBackup(onlyIfDue: boolean) {
+    if (!isAutoBackupAvailable()) return;
+    const st = await runAutoBackup(getLocalTasks(), { onlyIfDue });
+    if (st) window.dispatchEvent(new Event('abc-auto-backup'));
+  }
 
   // --- Task State Updaters ---
   const currentUserId = () => authUserRef.current?.uid || 'local-user';
@@ -745,15 +781,34 @@ export default function App() {
     }
   };
 
-  const handleRequestPermission = async () => {
-    const granted = await requestNotificationPermission();
+  /** 毎日の通知: オン・オフと時刻の変更（変更したらすぐ予約し直す。オフなら予約をすべて取り消す） */
+  const applyDailyNotify = async (on: boolean, time: string) => {
+    setDailyNotifyOn(on);
+    setDailyNotifyTime(time);
+    setDailyNotifySettings(on, time);
+    setDailyNotifyInfo(null);
+    let granted = await checkNotificationPermission();
+    if (on && !granted) {
+      granted = await requestNotificationPermission();
+      if (!granted) {
+        setDailyNotifyInfo(
+          Capacitor.isNativePlatform()
+            ? '通知が許可されていません。次の手順で許可してください。\n1. Android の「設定」アプリを開く\n2.「アプリ」→「ABC ToDo Planner」をタップ\n3.「通知」をタップ\n4.「ABC ToDo Planner のすべての通知」をオンにする'
+            : 'ブラウザの通知が許可されていません。アドレスバー左のアイコン（鍵マークなど）→「通知」→「許可」にしてください。',
+        );
+      }
+    }
     setNotificationsGranted(granted);
-    if (granted) {
-      alert('リマインダー通知が有効になりました！');
-    } else {
-      alert('通知の許可を得られませんでした。\nプレビュー（iframe内）ではブラウザのセキュリティ制限により、通知許可が動作しない場合があります。\n画面右上の「新しいタブで開く」等のボタンからアプリを実機または別タブで開いてお試しいただくか、ブラウザのアドレスバーのアイコン（鍵マーク等）から通知設定を許可してください。');
+    if (Capacitor.isNativePlatform()) {
+      const n = await scheduleDailyNow(getLocalTasks());
+      if (on && granted) setDailyNotifyInfo(`毎日 ${time} ごろに通知します（予約 ${n} 日分。対象のタスクがない日は通知しません）。`);
+      if (!on) setDailyNotifyInfo('通知をオフにしました（予約をすべて取り消しました）。');
+    } else if (on && granted) {
+      setDailyNotifyInfo(`このページを開いている間、毎日 ${time} を過ぎたら1回通知します。`);
     }
   };
+
+
 
   const handleHeaderSignIn = async () => {
     setIsSigningIn(true);
@@ -2266,13 +2321,24 @@ export default function App() {
                             </li>
                           ))}
                         </ul>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <button
                             type="button"
                             onClick={() => setAppEventSelection(new Set(appEvents.map((e) => e.eventId)))}
-                            className="px-2 py-1 text-[0.75rem] font-bold border border-zinc-300 dark:border-zinc-700 rounded-lg"
+                            disabled={appEventSelection.size === appEvents.length}
+                            id="btn-select-all-app-events"
+                            className="px-2 py-1 text-[0.75rem] font-bold border border-zinc-300 dark:border-zinc-700 rounded-lg disabled:opacity-40"
                           >
                             すべて選ぶ
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setAppEventSelection(new Set())}
+                            disabled={appEventSelection.size === 0}
+                            className="px-2 py-1 text-[0.75rem] font-bold border border-zinc-300 dark:border-zinc-700 rounded-lg disabled:opacity-40"
+                            id="btn-deselect-app-events"
+                          >
+                            すべて外す
                           </button>
                           <button
                             type="button"
@@ -2316,34 +2382,68 @@ export default function App() {
               </div>
             </div>
 
-            {/* Notification setting */}
-            <div className="mb-6">
+            {/* Notification setting（毎日の通知 v0.6.3） */}
+            <div className="mb-6" id="settings-notify">
               <h3 className="text-xs font-bold text-zinc-400 dark:text-zinc-500 mb-2.5 uppercase tracking-wider">
                 通知設定
               </h3>
-              <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-1.5 mb-1">
-                    <span className={`w-2 h-2 rounded-full ${notificationsGranted ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-                    <span className="text-xs font-bold text-zinc-700 dark:text-zinc-200">
-                      リマインダープッシュ通知
-                    </span>
-                  </div>
-                  <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
-                    タスクに設定された通知時間になったら、ブラウザからデスクトップ・スマートフォンの通知画面へリマインダーを配信します。
-                  </p>
+              <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl flex flex-col gap-3">
+                <div className="flex items-center justify-between gap-3">
+                  <label htmlFor="daily-notify-toggle" className="flex items-center gap-1.5 cursor-pointer">
+                    <span className={`w-2 h-2 rounded-full ${dailyNotifyOn && notificationsGranted ? 'bg-emerald-500' : dailyNotifyOn ? 'bg-amber-500' : 'bg-zinc-400'}`} />
+                    <span className="text-sm font-bold text-zinc-700 dark:text-zinc-200">プッシュ通知（1日1回）</span>
+                  </label>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      id="daily-notify-toggle"
+                      checked={dailyNotifyOn}
+                      onChange={(e) => void applyDailyNotify(e.target.checked, dailyNotifyTime)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-zinc-300 dark:bg-zinc-700 rounded-full peer peer-checked:bg-emerald-600 after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-5"></div>
+                    <span className="ml-2 text-xs font-bold text-zinc-600 dark:text-zinc-300 w-6">{dailyNotifyOn ? 'ON' : 'OFF'}</span>
+                  </label>
                 </div>
-                {notificationsGranted ? (
-                  <span className="self-start sm:self-center px-3 py-1 bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400 rounded-lg text-xs font-extrabold border border-emerald-200/40 dark:border-emerald-800/40 flex items-center gap-1.5">
-                    有効
-                  </span>
-                ) : (
+                <div className="flex items-center gap-2">
+                  <label htmlFor="daily-notify-time" className="text-[0.875rem] font-bold text-zinc-600 dark:text-zinc-300">通知する時刻</label>
+                  <input
+                    type="time"
+                    id="daily-notify-time"
+                    value={dailyNotifyTime}
+                    disabled={!dailyNotifyOn}
+                    onChange={(e) => {
+                      if (/^\d{2}:\d{2}$/.test(e.target.value)) void applyDailyNotify(dailyNotifyOn, e.target.value);
+                    }}
+                    className="px-3 py-1.5 text-sm font-bold bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 rounded-lg disabled:opacity-50"
+                  />
+                </div>
+                <p className="text-[0.8125rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
+                  毎日この時刻に、今日が実施予定日のタスクと期限切れの未完了タスクの件数・上位のタスクをまとめて1回だけ通知します（対象がない日は通知しません）。
+                  {Capacitor.isNativePlatform()
+                    ? '端末の電池節約のため、数分遅れて届くことがあります。'
+                    : 'Web版は、このページを開いている間だけ通知します（閉じているときは届きません）。'}
+                </p>
+                <div className="text-[0.8125rem] font-semibold text-zinc-600 dark:text-zinc-300 break-all" id="daily-notify-preview">
+                  {(() => {
+                    const s = buildDailySummary(tasks, getLocalDateString());
+                    return s ? `今日の通知の例: ${s.title}（${s.body.split('\n')[0].replace(/^・/, '')}${s.body.includes('\n') ? ' など' : ''}）` : '今日の通知の例: 対象のタスクはありません（通知しません）';
+                  })()}
+                </div>
+                {dailyNotifyOn && !notificationsGranted && !dailyNotifyInfo && (
                   <button
-                    onClick={handleRequestPermission}
-                    className="self-start sm:self-center px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 text-white dark:bg-zinc-100 dark:hover:bg-zinc-200 dark:text-zinc-950 rounded-lg text-xs font-bold transition-all shadow-xs"
+                    type="button"
+                    onClick={() => void applyDailyNotify(true, dailyNotifyTime)}
+                    className="self-start px-3 py-1.5 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 rounded-lg text-xs font-bold"
+                    id="btn-notify-permission"
                   >
-                    通知許可を有効にする
+                    通知を許可する
                   </button>
+                )}
+                {dailyNotifyInfo && (
+                  <div className="p-2.5 rounded-lg text-sm font-semibold whitespace-pre-line bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 text-zinc-700 dark:text-zinc-200" id="daily-notify-info">
+                    {dailyNotifyInfo}
+                  </div>
                 )}
               </div>
             </div>
@@ -2356,7 +2456,7 @@ export default function App() {
               <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl">
                 <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold mb-4">
                   ログイン中は Google アカウントごとにクラウドへ同期されます。未ログイン時はこの端末内に保存されます。
-                  追加のバックアップとして、JSON / CSV の書き出し・読み込みと Google ドライブへの保存も利用できます。
+                  追加のバックアップとして、JSON / CSV の書き出し・読み込みが使えます（Android アプリは1日1回、端末に自動バックアップもします）。
                 </p>
                 <div className="pt-2 border-t border-zinc-200/50 dark:border-zinc-800">
                   <BackupButton tasks={tasks} onImport={handleImportTasks} />

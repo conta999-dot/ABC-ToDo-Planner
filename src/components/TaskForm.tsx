@@ -361,40 +361,10 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
           </div>
         </div>
 
-        {/* Reminder Settings */}
-        <div className="border-t border-zinc-100 dark:border-zinc-800 pt-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-bold text-zinc-700 dark:text-zinc-300 flex items-center gap-1.5">
-              <Bell className="w-3.5 h-3.5 text-zinc-400" />
-              通知 (リマインダー)
-            </span>
-            <label className="relative inline-flex items-center cursor-pointer" id="lbl-reminder-toggle">
-              <input
-                type="checkbox"
-                checked={reminderEnabled}
-                onChange={(e) => setReminderEnabled(e.target.checked)}
-                className="sr-only peer"
-                id="reminder-enabled-checkbox"
-              />
-              <div className="w-8 h-4 bg-zinc-200 dark:bg-zinc-800 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-zinc-900 dark:peer-checked:bg-zinc-100"></div>
-            </label>
-          </div>
-
-          {reminderEnabled && (
-            <div className="flex gap-2 items-center animate-fade-in">
-              <input
-                type="time"
-                value={reminderTime}
-                onChange={(e) => setReminderTime(e.target.value)}
-                required={reminderEnabled}
-                className="px-3 py-1.5 text-sm bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-zinc-950 dark:focus:ring-zinc-300 text-zinc-900 dark:text-zinc-50"
-                id="reminder-time-input"
-              />
-              <span className="text-xs text-zinc-400 dark:text-zinc-500 font-medium">
-                にデスクトップ通知を表示します。
-              </span>
-            </div>
-          )}
+        {/* 通知: v0.6.3 からタスクごとの通知はなく、設定の「プッシュ通知（1日1回）」でまとめて通知 */}
+        <div className="border-t border-zinc-100 dark:border-zinc-800 pt-3 text-[0.8125rem] font-semibold text-zinc-500 dark:text-zinc-400 flex items-center gap-1.5" id="task-form-notify-note">
+          <Bell className="w-3.5 h-3.5 text-zinc-400" />
+          通知は設定の「プッシュ通知（1日1回）」で、その日のタスクをまとめてお知らせします。
         </div>
 
         {/* Notes */}

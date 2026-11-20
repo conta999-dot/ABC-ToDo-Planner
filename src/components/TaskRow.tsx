@@ -5,7 +5,7 @@
  * - 日付をタップ／クリックするとカレンダー（日付選択）が開く
  */
 import React, { useRef } from 'react';
-import { ArrowDown, ArrowUp, ArrowUpDown, Bell, CalendarDays, CalendarCheck } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, CalendarDays, CalendarCheck } from 'lucide-react';
 import { PriorityLetter, Task, TaskStatus } from '../types';
 
 export type SortDir = 'asc' | 'desc';
@@ -319,9 +319,6 @@ export function TaskRow({
         title="タップで詳細を開く"
       >
         {task.title}
-        {task.reminderEnabled && task.reminderTime && (
-          <span className="ml-1 inline-flex items-center gap-0.5 text-[0.75rem] font-bold text-sky-500 align-middle"><Bell className="w-3 h-3" />{task.reminderTime}</span>
-        )}
         {task.calendarExported && (
           <CalendarCheck className="ml-1 inline w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 align-middle" aria-label="カレンダー登録済" />
         )}

@@ -1,12 +1,6 @@
 package com.conta999.abctodoplanner;
 
-import android.app.PendingIntent;
-import android.content.Intent;
 
-import androidx.activity.result.ActivityResult;
-import androidx.activity.result.ActivityResultLauncher;
-import androidx.activity.result.IntentSenderRequest;
-import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.credentials.ClearCredentialStateRequest;
 import androidx.credentials.Credential;
@@ -25,12 +19,8 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
-import com.google.android.gms.auth.api.identity.AuthorizationRequest;
-import com.google.android.gms.auth.api.identity.AuthorizationResult;
-import com.google.android.gms.auth.api.identity.Identity;
 import com.google.android.gms.common.api.ApiException;
 import com.google.android.gms.common.api.CommonStatusCodes;
-import com.google.android.gms.common.api.Scope;
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption;
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential;
 
@@ -40,8 +30,8 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 
 /**
- * Native Google sign-in via Android Credential Manager, plus Drive authorization
- * via the Play services AuthorizationClient. No google-services.json is used:
+ * Native Google sign-in via Android Credential Manager (v0.6.3: Drive authorization removed).
+ * No google-services.json is used:
  * the Web OAuth client ID is passed in from JS at runtime.
  */
 @CapacitorPlugin(name = "NativeGoogleAuth")
@@ -54,16 +44,6 @@ public class NativeGoogleAuthPlugin extends Plugin {
     private static final String CODE_FAILED = "FAILED";
 
     private final Executor executor = Executors.newSingleThreadExecutor();
-    private ActivityResultLauncher<IntentSenderRequest> authorizeLauncher;
-    private String pendingAuthorizeCallId;
-
-    @Override
-    public void load() {
-        authorizeLauncher = getActivity().registerForActivityResult(
-            new ActivityResultContracts.StartIntentSenderForResult(),
-            this::handleAuthorizeResult
-        );
-    }
 
     @PluginMethod
     public void signIn(PluginCall call) {
@@ -136,97 +116,6 @@ public class NativeGoogleAuthPlugin extends Plugin {
                 }
             }
         );
-    }
-
-    @PluginMethod
-    public void authorize(PluginCall call) {
-        boolean interactive = Boolean.TRUE.equals(call.getBoolean("interactive", false));
-        List<String> scopeStrings;
-        try {
-            scopeStrings = call.getArray("scopes", new com.getcapacitor.JSArray()).toList();
-        } catch (Exception e) {
-            scopeStrings = new ArrayList<>();
-        }
-        if (scopeStrings.isEmpty()) {
-            call.reject("No scopes requested", CODE_FAILED);
-            return;
-        }
-        List<Scope> scopes = new ArrayList<>();
-        for (String s : scopeStrings) scopes.add(new Scope(s));
-
-        AuthorizationRequest request = AuthorizationRequest.builder()
-            .setRequestedScopes(scopes)
-            .build();
-
-        Identity.getAuthorizationClient(getActivity())
-            .authorize(request)
-            .addOnSuccessListener(result -> {
-                if (result.hasResolution()) {
-                    if (!interactive) {
-                        call.reject("User interaction required", CODE_NEED_INTERACTION);
-                        return;
-                    }
-                    PendingIntent pi = result.getPendingIntent();
-                    if (pi == null) {
-                        call.reject("Missing authorization resolution", CODE_FAILED);
-                        return;
-                    }
-                    if (pendingAuthorizeCallId != null) {
-                        PluginCall prev = bridge.getSavedCall(pendingAuthorizeCallId);
-                        if (prev != null) {
-                            prev.reject("Superseded by a new authorization request", CODE_CANCELLED);
-                            bridge.releaseCall(prev);
-                        }
-                    }
-                    call.setKeepAlive(true);
-                    bridge.saveCall(call);
-                    pendingAuthorizeCallId = call.getCallbackId();
-                    try {
-                        authorizeLauncher.launch(new IntentSenderRequest.Builder(pi.getIntentSender()).build());
-                    } catch (Exception e) {
-                        pendingAuthorizeCallId = null;
-                        call.setKeepAlive(false);
-                        bridge.releaseCall(call);
-                        call.reject("Failed to launch authorization UI: " + e.getMessage(), CODE_FAILED, e);
-                    }
-                } else {
-                    resolveToken(call, result);
-                }
-            })
-            .addOnFailureListener(e -> call.reject(describe(e), classifyApi(e), e, details(e, null)));
-    }
-
-    private void handleAuthorizeResult(ActivityResult activityResult) {
-        if (pendingAuthorizeCallId == null) return;
-        PluginCall call = bridge.getSavedCall(pendingAuthorizeCallId);
-        pendingAuthorizeCallId = null;
-        if (call == null) return;
-        call.setKeepAlive(false);
-        bridge.releaseCall(call);
-
-        Intent data = activityResult.getData();
-        if (data == null) {
-            call.reject("Authorization cancelled", CODE_CANCELLED);
-            return;
-        }
-        try {
-            AuthorizationResult result = Identity.getAuthorizationClient(getActivity())
-                .getAuthorizationResultFromIntent(data);
-            resolveToken(call, result);
-        } catch (ApiException e) {
-            call.reject(describe(e), classifyApi(e), e, details(e, null));
-        }
-    }
-
-    private void resolveToken(PluginCall call, AuthorizationResult result) {
-        String token = result.getAccessToken();
-        if (token == null || token.isEmpty()) {
-            call.reject("No access token returned", CODE_FAILED);
-            return;
-        }
-        JSObject ret = new JSObject();
-        ret.put("accessToken", token);
-        call.resolve(ret);
     }
 
     /** Raw diagnostic details passed to JS (shown to the user so they can screenshot it). */
