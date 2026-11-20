@@ -91,6 +91,7 @@ import {
   compareTasks,
   matchesStatusFilter,
 } from './components/TaskRow';
+import { DayTaskScroll } from './components/DayTaskScroll';
 import { useTaskDrag, DropTarget } from './lib/useTaskDrag';
 import { priorityForQuadrant, QUADRANT_DROP_RULE } from './lib/quadrantMove';
 
@@ -445,7 +446,45 @@ export default function App() {
   const toggleSortDir = () => setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
   const isWide = useMediaQuery('(min-width: 768px)');
   const isXL = useMediaQuery('(min-width: 1280px)');
-  const isUltra = useMediaQuery('(min-width: 2200px)');
+  // v0.6.8: デイリー（7日間）の表示設定。PC（横1280px以上）は7日を横1列に並べ、行を詰める
+  const [dailyDensity, setDailyDensity] = useState<'one' | 'two'>(() => {
+    try {
+      return localStorage.getItem('abc_daily_density') === 'two' ? 'two' : 'one';
+    } catch {
+      return 'one';
+    }
+  });
+  const [dailyCollapseDone, setDailyCollapseDone] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('abc_daily_collapse_done') !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const [expandedDoneDays, setExpandedDoneDays] = useState<Set<string>>(() => new Set());
+  const changeDailyDensity = (v: 'one' | 'two') => {
+    setDailyDensity(v);
+    try {
+      localStorage.setItem('abc_daily_density', v);
+    } catch {
+      // ignore
+    }
+  };
+  const changeDailyCollapseDone = (v: boolean) => {
+    setDailyCollapseDone(v);
+    try {
+      localStorage.setItem('abc_daily_collapse_done', v ? '1' : '0');
+    } catch {
+      // ignore
+    }
+  };
+  const toggleDoneDay = (d: string) =>
+    setExpandedDoneDays((prev) => {
+      const next = new Set(prev);
+      if (next.has(d)) next.delete(d);
+      else next.add(d);
+      return next;
+    });
 
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator === 'undefined' ? true : navigator.onLine);
@@ -1870,7 +1909,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className={`grid grid-cols-1 gap-2 md:flex-1 md:min-h-[24rem] ${isUltra ? 'md:grid-cols-7 md:grid-rows-1' : 'md:grid-cols-4 md:grid-rows-2'}`} id="weekly-days-grid">
+            <div className={`grid grid-cols-1 gap-2 md:flex-1 md:min-h-[24rem] ${isXL ? 'md:grid-cols-7 md:grid-rows-1' : 'md:grid-cols-4 md:grid-rows-2'}`} id="weekly-days-grid" data-density={isXL ? dailyDensity : 'normal'}>
               {weekDays.map((dateStr) => {
                 const isToday = dateStr === todayStr;
                 const jpDay = getJPDayOfWeek(dateStr);
@@ -1880,6 +1919,24 @@ export default function App() {
                 const completedCount = allDayTasks.filter((t) => t.status === 'completed').length;
                 const progressPct = allDayTasks.length > 0 ? Math.round((completedCount / allDayTasks.length) * 100) : 0;
                 const isOver = drag.over?.kind === 'date' && drag.over.value === dateStr;
+                // v0.6.8: 完了タスクの折りたたみ（PC・タブレット幅のみ。スマホは今まで通りすべて表示）
+                const collapseDone = isWide && dailyCollapseDone && statusFilter !== 'completed';
+                const doneTasks = collapseDone ? dayTasks.filter((t) => t.status === 'completed') : [];
+                const shownTasks = collapseDone ? dayTasks.filter((t) => t.status !== 'completed') : dayTasks;
+                const doneExpanded = expandedDoneDays.has(dateStr);
+                const rowDensity = isXL ? dailyDensity : undefined;
+                const renderRow = (t: Task) => (
+                  <TaskRow
+                    key={t.id}
+                    task={t}
+                    dateMode="short"
+                    density={rowDensity}
+                    todayStr={todayStr}
+                    handlers={rowHandlers}
+                    dragProps={drag.bind(t.id, t.title)}
+                    isDragging={drag.visual?.taskId === t.id}
+                  />
+                );
 
                 return (
                   <div
@@ -1887,7 +1944,7 @@ export default function App() {
                     data-drop-kind="date"
                     data-drop-value={dateStr}
                     id={`day-col-${dateStr}`}
-                    className={`border-2 rounded-xl p-1.5 flex flex-col md:min-h-0 transition-all bg-white dark:bg-zinc-900/90 ${
+                    className={`border-2 rounded-xl p-1.5 flex flex-col min-w-0 md:min-h-0 transition-all bg-white dark:bg-zinc-900/90 ${
                       isOver
                         ? 'border-sky-400 ring-4 ring-sky-400/40 bg-sky-50 dark:bg-sky-950/30'
                         : isToday
@@ -1905,39 +1962,52 @@ export default function App() {
                             ({jpDay})
                           </span>
                         </span>
-                        {isToday && (
-                          <span className="text-[0.75rem] font-black bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 px-1.5 py-0.5 rounded-md">本日</span>
-                        )}
+                        <span className="flex items-center gap-1 flex-none">
+                          {isToday && (
+                            <span className="text-[0.75rem] font-black bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 px-1.5 py-0.5 rounded-md whitespace-nowrap">本日</span>
+                          )}
+                        </span>
                       </div>
                       {allDayTasks.length > 0 && (
                         <div className="mt-1 flex items-center justify-between gap-1">
                           <div className="flex-1 bg-zinc-100 dark:bg-zinc-800 h-1 rounded-full overflow-hidden">
                             <div className="bg-zinc-900 dark:bg-zinc-100 h-full transition-all" style={{ width: `${progressPct}%` }} />
                           </div>
+                          <span
+                            className="text-[0.75rem] font-black px-1 rounded bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 whitespace-nowrap"
+                            id={`day-count-${dateStr}`}
+                            title={`この日のタスク ${allDayTasks.length}件（未完了 ${allDayTasks.length - completedCount}件）`}
+                          >
+                            {allDayTasks.length}件・未完了{allDayTasks.length - completedCount}
+                          </span>
                           <span className="text-[0.75rem] font-bold text-zinc-400 font-mono">{progressPct}%</span>
                         </div>
                       )}
                     </div>
 
-                    <div className="flex-1 md:min-h-0 flex flex-col divide-y divide-zinc-100 dark:divide-zinc-800/60 md:overflow-y-auto">
+                    <DayTaskScroll className="flex-1 md:min-h-0 flex flex-col divide-y divide-zinc-100 dark:divide-zinc-800/60 md:overflow-y-auto" id={`day-list-${dateStr}`}>
                       {dayTasks.length === 0 ? (
                         <div className="text-[0.8125rem] text-zinc-400/80 dark:text-zinc-600 italic text-center py-3 md:py-6">
                           {isOver ? 'ここへ移動' : '予定なし'}
                         </div>
                       ) : (
-                        dayTasks.map((t) => (
-                          <TaskRow
-                            key={t.id}
-                            task={t}
-                            dateMode="short"
-                            todayStr={todayStr}
-                            handlers={rowHandlers}
-                            dragProps={drag.bind(t.id, t.title)}
-                            isDragging={drag.visual?.taskId === t.id}
-                          />
-                        ))
+                        <>
+                          {shownTasks.map(renderRow)}
+                          {doneTasks.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => toggleDoneDay(dateStr)}
+                              className="w-full py-1 text-center text-[0.75rem] font-bold text-zinc-500 dark:text-zinc-400 hover:text-zinc-800 dark:hover:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800/40 rounded-md"
+                              id={`btn-done-toggle-${dateStr}`}
+                              aria-expanded={doneExpanded}
+                            >
+                              ✓ 完了 {doneTasks.length}件（{doneExpanded ? 'クリックで隠す' : 'クリックで表示'}）
+                            </button>
+                          )}
+                          {doneExpanded && doneTasks.map(renderRow)}
+                        </>
                       )}
-                    </div>
+                    </DayTaskScroll>
 
                     <div className="pt-1.5 mt-1.5 border-t border-zinc-100 dark:border-zinc-800/60">
                       <button
@@ -1983,6 +2053,7 @@ export default function App() {
                     <li>達成状況・重要度・緊急度はプルダウンでその場で変更できます。日付を押すとカレンダーが開き、日付を変更できます。</li>
                     <li>タスク名を押すと詳細画面が開きます。「予定を作成」でその日の予定を詳細入力で作れます。</li>
                     <li>上の「達成状況」の絞り込みと「期日」の並べ替え（押すたびに昇順・降順）は、ほかのタブと共通です。</li>
+                    <li>パソコンの広い画面では7日を横1列に並べ、タスクを詰めて表示します（日付ボタンは出ないので、日付はドラッグか詳細で変更）。各日の「N件・未完了M」が件数、「▼ スクロールで あとN件」が出たらカードの中をスクロールできます。完了したタスクは「✓ 完了 N件」を押すと表示されます。表示密度と折りたたみは設定で変えられます。</li>
                   </ul>
                   <div className="mt-5 flex justify-end">
                     <button onClick={() => setShowDailyHelp(false)} className="px-4 py-2 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 text-sm font-black rounded-lg">
@@ -2406,6 +2477,60 @@ export default function App() {
                   {darkMode ? <Sun className="w-4 h-4 text-amber-500" /> : <Moon className="w-4 h-4 text-indigo-500" />}
                   <span>{darkMode ? 'ライトモードにする' : 'ダークモードにする'}</span>
                 </button>
+              </div>
+            </div>
+
+            {/* Daily view setting（7日間の表示 v0.6.8） */}
+            <div className="mb-6" id="settings-daily-view">
+              <h3 className="text-xs font-bold text-zinc-400 dark:text-zinc-500 mb-2.5 uppercase tracking-wider">
+                デイリー（7日間）の表示
+              </h3>
+              <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl flex flex-col gap-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <span className="text-sm font-bold text-zinc-700 dark:text-zinc-200">表示密度</span>
+                  <div className="inline-flex self-start sm:self-auto p-0.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900" role="group" aria-label="表示密度">
+                    <button
+                      type="button"
+                      id="daily-density-one"
+                      onClick={() => changeDailyDensity('one')}
+                      aria-pressed={dailyDensity === 'one'}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${dailyDensity === 'one' ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 shadow-xs' : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200/60 dark:hover:bg-zinc-800'}`}
+                    >
+                      1行に詰める
+                    </button>
+                    <button
+                      type="button"
+                      id="daily-density-two"
+                      onClick={() => changeDailyDensity('two')}
+                      aria-pressed={dailyDensity === 'two'}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${dailyDensity === 'two' ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 shadow-xs' : 'text-zinc-600 dark:text-zinc-300 hover:bg-zinc-200/60 dark:hover:bg-zinc-800'}`}
+                    >
+                      2行まで表示
+                    </button>
+                  </div>
+                </div>
+                <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
+                  パソコンの広い画面（横1280px以上）では7日を横1列に並べ、タスクを詰めて表示します。「1行に詰める」は長いタスク名を「…」で省略（マウスを乗せると全文）、「2行まで表示」は2行まで折り返します。この表示では日付ボタンを出さないので、日付はドラッグか詳細画面で変えてください。スマホ・狭い画面は今まで通りです。
+                </p>
+                <div className="flex items-center justify-between gap-3 pt-1 border-t border-zinc-200/60 dark:border-zinc-800">
+                  <label htmlFor="daily-collapse-done-toggle" className="text-sm font-bold text-zinc-700 dark:text-zinc-200 cursor-pointer">
+                    完了したタスクを折りたたむ
+                  </label>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      id="daily-collapse-done-toggle"
+                      checked={dailyCollapseDone}
+                      onChange={(e) => changeDailyCollapseDone(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-zinc-300 dark:bg-zinc-700 rounded-full peer peer-checked:bg-emerald-600 after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-5"></div>
+                    <span className="ml-2 text-xs font-bold text-zinc-600 dark:text-zinc-300 w-6">{dailyCollapseDone ? 'ON' : 'OFF'}</span>
+                  </label>
+                </div>
+                <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
+                  ONのときは、各日のカードで完了したタスクを「✓ 完了 N件」の1行にまとめ、クリックで表示します（パソコン・タブレット幅のデイリー。スマホは今まで通りすべて表示します。絞り込みで「完了」を選んだときは折りたたみません）。
+                </p>
               </div>
             </div>
 

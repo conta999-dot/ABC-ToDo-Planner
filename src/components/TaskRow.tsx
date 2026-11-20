@@ -285,6 +285,7 @@ export function TaskRow({
   dragProps,
   isDragging = false,
   showNotes = false,
+  density,
 }: {
   task: Task;
   todayStr: string;
@@ -293,6 +294,8 @@ export function TaskRow({
   dragProps?: Record<string, unknown>;
   isDragging?: boolean;
   showNotes?: boolean;
+  /** v0.6.8: PC の7日表示用。'one'=1行に詰める / 'two'=2行まで。指定時は日付ボタンを出さない（日付はドラッグか詳細で変更） */
+  density?: 'one' | 'two';
 }) {
   const isCompleted = task.status === 'completed';
   const isDeleted = task.status === 'deleted';
@@ -300,7 +303,7 @@ export function TaskRow({
     <div
       {...dragProps}
       style={{ WebkitTouchCallout: 'none' }}
-      className={`${rowGrid(dateMode)} select-none px-1.5 py-1 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors ${
+      className={`${density ? `grid grid-cols-[1.4rem_auto_minmax(0,1fr)] items-center gap-x-1.5 row-dense ${density === 'one' ? 'row-one' : 'row-two'}` : rowGrid(dateMode)} select-none px-1.5 py-1 rounded-md hover:bg-zinc-50 dark:hover:bg-zinc-800/30 transition-colors ${
         dragProps ? 'cursor-grab active:cursor-grabbing' : ''
       } ${isDragging ? 'opacity-40 ring-2 ring-sky-400' : ''} ${isCompleted ? 'opacity-65' : ''} ${isDeleted ? 'opacity-50' : ''}`}
       id={`task-row-${task.id}`}
@@ -313,10 +316,10 @@ export function TaskRow({
           e.stopPropagation();
           handlers.onOpen(task.id);
         }}
-        className={`min-w-0 text-left text-[0.875rem] font-semibold leading-snug break-words hover:underline cursor-pointer text-zinc-800 dark:text-zinc-100 ${
+        className={`row-title min-w-0 text-left text-[0.875rem] font-semibold leading-snug break-words hover:underline cursor-pointer text-zinc-800 dark:text-zinc-100 ${
           isCompleted ? 'line-through text-zinc-400 dark:text-zinc-500' : ''
         } ${isDeleted ? 'line-through text-red-500' : ''}`}
-        title="タップで詳細を開く"
+        title={density ? `${task.title}（クリックで詳細）` : 'タップで詳細を開く'}
       >
         {task.title}
         {task.calendarExported && (
@@ -326,9 +329,11 @@ export function TaskRow({
           <span className="block text-[0.8125rem] font-medium text-zinc-400 dark:text-zinc-500 truncate">{task.notes}</span>
         )}
       </button>
-      <span className="flex justify-end">
-        <DueDateButton value={task.dueDate} todayStr={todayStr} mode={dateMode} onChange={(d) => handlers.onDate(task.id, d)} />
-      </span>
+      {!density && (
+        <span className="flex justify-end">
+          <DueDateButton value={task.dueDate} todayStr={todayStr} mode={dateMode} onChange={(d) => handlers.onDate(task.id, d)} />
+        </span>
+      )}
     </div>
   );
 }
