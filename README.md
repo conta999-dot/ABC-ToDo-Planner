@@ -5,7 +5,7 @@
 - アプリ名: **ABC ToDo Planner**
 - Google Play 掲載名（予定）: **ABC ToDo Planner**
 - パッケージ ID: `com.conta999.abctodoplanner`
-- バージョン: 0.6.5（versionCode 15）
+- バージョン: 0.6.6（versionCode 16）
 - Firebase プロジェクト: `abc-todo-planner-1b179`
 - PC 版: https://conta999-dot.github.io/ABC-ToDo-Planner/
 
@@ -46,6 +46,12 @@ Web 版は Firebase の Web 用クライアント設定（`firebase-applet-confi
 - CSV は完了日・更新日時・カレンダー登録済も出力し、セル内の改行・カンマ・引用符に対応。JSON / CSV の読込はカレンダー登録済フラグを保つ（読込で二重エクスポートにならない）
 - Googleドライブ同期・バックアップは v0.6.3 で廃止（Drive API・drive.file の許可も使わない）。端末間の同期は Firestore で行う
 - Android の自動バックアップ（v0.6.3〜、設定でオン・オフ、既定オン）: その日はじめてアプリを開いた・戻ったときに `ドキュメント/ABCToDoPlanner/ABCToDoPlanner_backup_YYYYMMDD.json` を作成し、その日のうちにタスクを変えたら同じファイルを更新（1日1ファイル）。新しい7日分を残し、古いものは `old` フォルダへ移動（削除しない）。中身は JSON書出と同じ（完了日・カレンダー登録済も含む）で「読込」で戻せる。Web版は手動の書出のみ
+
+## 対応ブラウザ（v0.6.6〜）
+
+- CSS の色は Tailwind v4 の oklch / color-mix に加えて、hex/rgb のフォールバックも出力する（`vite.config.ts` で lightningcss の targets を chrome/edge 87 以上などに設定）。oklch に対応していない Edge / Chrome 110 以前でも、ダークモードの色が崩れない（v0.6.5 以前は、カードだけ灰色・文字が黒・ページ背景が白になっていた）
+- `<meta name="color-scheme" content="light dark">` と、`html` / `html.dark` の `color-scheme` で、スクロールバーや入力欄の明暗をアプリのテーマに合わせる
+- テーマは設定で選んだものを優先し、未設定ならブラウザ（OS）のダーク・ライト設定に従う
 
 ## 通知（v0.6.3〜、v0.6.5 でタスクごとの通知を復活）
 

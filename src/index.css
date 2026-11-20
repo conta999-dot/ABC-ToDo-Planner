@@ -13,6 +13,14 @@
   --text-xs--line-height: 1.35;
 }
 
+/* v0.6.6: ブラウザ標準の部品（スクロールバー・入力欄・日付選択など）の明暗をアプリのテーマに合わせる */
+html {
+  color-scheme: light;
+}
+html.dark {
+  color-scheme: dark;
+}
+
 html {
   font-size: 100%;
   -webkit-text-size-adjust: 100%;
