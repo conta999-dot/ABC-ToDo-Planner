@@ -812,7 +812,7 @@ export default function App() {
     setNotificationsGranted(granted);
     if (Capacitor.isNativePlatform()) {
       const n = await scheduleDailyNow(getLocalTasks());
-      if (on && granted) setDailyNotifyInfo(`毎日 ${time} ごろに通知します（予約 ${n} 日分。対象のタスクがない日は通知しません）。`);
+      if (on && granted) setDailyNotifyInfo(`毎日 ${time} ごろにまとめて通知します。タスクごとの通知も含めて ${n} 件を予約しました（数分遅れることがあります）。`);
       if (!on) setDailyNotifyInfo('通知をオフにしました（予約をすべて取り消しました）。');
     } else if (on && granted) {
       setDailyNotifyInfo(`このページを開いている間、毎日 ${time} を過ぎたら1回通知します。`);
@@ -1183,8 +1183,9 @@ export default function App() {
       priorityNumber: resolved.number,
       quadrant: calculatedQ,
       dueDate: parsedDate || selectedDate,
-      reminderTime: '',
-      reminderEnabled: false,
+      // 新規タスク: 設定の通知時刻を初期値にして通知ON（v0.6.5〜）
+      reminderTime: getDailyNotifyTime(),
+      reminderEnabled: true,
       reminderNotified: false,
       completed: false,
       status: 'pending',
@@ -2417,7 +2418,7 @@ export default function App() {
                 <div className="flex items-center justify-between gap-3">
                   <label htmlFor="daily-notify-toggle" className="flex items-center gap-1.5 cursor-pointer">
                     <span className={`w-2 h-2 rounded-full ${dailyNotifyOn && notificationsGranted ? 'bg-emerald-500' : dailyNotifyOn ? 'bg-amber-500' : 'bg-zinc-400'}`} />
-                    <span className="text-sm font-bold text-zinc-700 dark:text-zinc-200">プッシュ通知（1日1回）</span>
+                    <span className="text-sm font-bold text-zinc-700 dark:text-zinc-200">プッシュ通知</span>
                   </label>
                   <label className="relative inline-flex items-center cursor-pointer">
                     <input
@@ -2432,7 +2433,7 @@ export default function App() {
                   </label>
                 </div>
                 <div className="flex items-center gap-2">
-                  <label htmlFor="daily-notify-time" className="text-[0.875rem] font-bold text-zinc-600 dark:text-zinc-300">通知する時刻</label>
+                  <label htmlFor="daily-notify-time" className="text-[0.875rem] font-bold text-zinc-600 dark:text-zinc-300">通知する時刻（新規タスクの初期値）</label>
                   <input
                     type="time"
                     id="daily-notify-time"
@@ -2445,7 +2446,8 @@ export default function App() {
                   />
                 </div>
                 <p className="text-[0.8125rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
-                  毎日この時刻に、今日が実施予定日のタスクと期限切れの未完了タスクの件数・上位のタスクをまとめて1回だけ通知します（対象がない日は通知しません）。
+                  毎日この時刻に、今日が実施予定日のタスクと期限切れの未完了タスクの件数・上位のタスクをまとめて通知します（対象がない日は通知しません）。
+                  新規タスクにはこの時刻が通知時刻の初期値として設定されます（既存タスクは変更しません）。タスクごとの時刻は詳細画面で変えられ、その時刻に実施予定日に通知します。同じ時刻のタスクは1つの通知にまとめ、この時刻と同じものは上のまとめ通知に含めます。完了したタスクは通知しません。このスイッチをOFFにすると、すべての通知が止まります。
                   {Capacitor.isNativePlatform()
                     ? '端末の電池節約のため、数分遅れて届くことがあります。'
                     : 'Web版は、このページを開いている間だけ通知します（閉じているときは届きません）。'}
