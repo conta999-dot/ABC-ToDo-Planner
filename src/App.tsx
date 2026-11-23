@@ -29,7 +29,7 @@ import { Capacitor, SystemBars, SystemBarsStyle } from '@capacitor/core';
 import { Network } from '@capacitor/network';
 import { App as CapApp } from '@capacitor/app';
 
-import { Task, PriorityLetter, TaskQuadrant, TaskStatus, getTaskQuadrant } from './types';
+import { Task, PriorityLetter, TaskQuadrant, TaskStatus, getTaskQuadrant, TagSettings, BLANK_TAG_ID } from './types';
 import { getLocalTasks, saveLocalTasks } from './lib/db';
 import {
   startReminderScheduler,
@@ -45,6 +45,18 @@ import {
 } from './lib/reminder';
 import { getLocalDateString, addDays, newTaskId, parseLocalDate } from './lib/dates';
 import { carryOverOverdueTasks } from './lib/carryOver';
+import {
+  loadLocalTagSettings,
+  saveLocalTagSettings,
+  addTag,
+  renameTag,
+  deleteTag,
+  setDefaultTag,
+  findTag,
+  isBlankTagId,
+  mergeTagSettings,
+  shouldRegisterOnEnter,
+} from './lib/tags';
 import { initAuth, googleSignIn, logout as firebaseLogout } from './lib/firebase';
 import {
   buildEventTitle,
@@ -76,7 +88,7 @@ import {
 } from './lib/calendar';
 import { errorDetail } from './lib/nativeGoogleAuth';
 import { Browser } from '@capacitor/browser';
-import { subscribeToUserTasks, pushUserTasks } from './lib/sync';
+import { subscribeToUserTasks, pushUserTasks, subscribeToUserTagSettings, pushUserTagSettings } from './lib/sync';
 import { mergeTasks } from './lib/merge';
 import { isAutoBackupAvailable, runAutoBackup } from './lib/autoBackup';
 
@@ -489,6 +501,11 @@ export default function App() {
       return next;
     });
 
+  const [tagSettings, setTagSettings] = useState<TagSettings>(() => loadLocalTagSettings());
+  const [quickTagId, setQuickTagId] = useState<string>(() => loadLocalTagSettings().defaultTagId);
+  const [newTagName, setNewTagName] = useState('');
+  const [tagSettingsError, setTagSettingsError] = useState<string | null>(null);
+  const applyingTagsRemoteRef = useRef(false);
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator === 'undefined' ? true : navigator.onLine);
@@ -765,6 +782,35 @@ export default function App() {
   }, [authUser]);
 
   useEffect(() => {
+    if (!authUser) return;
+    const unsub = subscribeToUserTagSettings(
+      authUser.uid,
+      (cloud) => {
+        const local = loadLocalTagSettings();
+        const { settings, shouldPush } = mergeTagSettings(local, cloud);
+        applyingTagsRemoteRef.current = !shouldPush;
+        const normalizedDefault = settings.tags.some((t) => t.id === settings.defaultTagId) ? settings.defaultTagId : BLANK_TAG_ID;
+        const saved = { ...settings, defaultTagId: normalizedDefault };
+        setTagSettings(saved);
+        saveLocalTagSettings(saved);
+        setQuickTagId((curr) => (saved.tags.some((t) => t.id === curr) ? curr : saved.defaultTagId));
+        if (shouldPush) {
+          void pushUserTagSettings(authUser.uid, saved).catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : 'タグ設定の保存に失敗しました。';
+            setTagSettingsError(message);
+          });
+        }
+        applyingTagsRemoteRef.current = false;
+      },
+      (error) => {
+        setTagSettingsError('タグ設定の同期に失敗しました。');
+        console.error(error);
+      },
+    );
+    return () => unsub();
+  }, [authUser]);
+
+  useEffect(() => {
     if (!Capacitor.isNativePlatform()) return;
     let handle: { remove: () => void } | undefined;
     void CapApp.addListener('appStateChange', ({ isActive }) => {
@@ -845,6 +891,24 @@ export default function App() {
         })
         .finally(() => setIsSyncing(false));
     }
+  };
+
+  const persistTagSettings = (next: TagSettings) => {
+    const normalizedDefault = next.tags.some((t) => t.id === next.defaultTagId) ? next.defaultTagId : BLANK_TAG_ID;
+    const saved = { ...next, defaultTagId: normalizedDefault };
+    setTagSettings(saved);
+    saveLocalTagSettings(saved);
+    setQuickTagId((curr) => (saved.tags.some((t) => t.id === curr) ? curr : saved.defaultTagId));
+    setTagSettingsError(null);
+    const uid = currentUserId();
+    if (uid !== 'local-user' && !applyingTagsRemoteRef.current) {
+      void pushUserTagSettings(uid, saved).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : 'タグ設定の保存に失敗しました。';
+        setTagSettingsError(message);
+        setSyncError('タグ設定のクラウド保存に失敗しました。', error);
+      });
+    }
+    return saved;
   };
 
   // v0.7.0: 昨日以前の未完了タスクを今日へ移す。初回の読み込み／同期が終わってからだけ動かす
@@ -1263,8 +1327,10 @@ export default function App() {
   };
 
   // 一覧・簡易登録画面の追加アクション
+  const quickComposingRef = useRef(false);
   const handleQuickAdd = (e: React.FormEvent) => {
     e.preventDefault();
+    if (quickComposingRef.current) return;
     if (!quickTitle.trim()) return;
 
     // 先に日付表現を抽出して取り除く
@@ -1291,12 +1357,14 @@ export default function App() {
       completedAt: null,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      tagId: quickTagId || tagSettings.defaultTagId || BLANK_TAG_ID,
     };
 
     updateTasksState([newTask, ...tasks]);
     setQuickTitle('');
     setQuickLetter('');
     setQuickNumber(null);
+    setQuickTagId(tagSettings.defaultTagId || BLANK_TAG_ID);
   };
 
   // 詳細入力画面からの保存アクション
@@ -1501,6 +1569,11 @@ export default function App() {
       handleMoveToQuadrant(taskId, dropTarget.value as TaskQuadrant);
     }
   });
+
+  const tagLabel = (task: Task) => {
+    const tag = findTag(tagSettings, task.tagId);
+    return tag.isBlank || isBlankTagId(tag.id) ? undefined : tag.name;
+  };
 
   const rowHandlers: TaskRowHandlers = {
     onStatus: (taskId, status) => handleUpdateTaskFieldDirect(taskId, 'status', status),
@@ -1729,6 +1802,7 @@ export default function App() {
                     <TaskRow
                       key={task.id}
                       task={task}
+                      tagName={tagLabel(task)}
                       dateMode={isWide ? 'full' : 'short'}
                       showNotes={isWide}
                       todayStr={todayStr}
@@ -1794,6 +1868,7 @@ export default function App() {
                             <TaskRow
                               key={t.id}
                               task={t}
+                              tagName={tagLabel(t)}
                               dateMode={isXL ? 'short' : 'icon'}
                               todayStr={todayStr}
                               handlers={rowHandlers}
@@ -1871,6 +1946,7 @@ export default function App() {
                         <TaskRow
                           key={t.id}
                           task={t}
+                          tagName={tagLabel(t)}
                           dateMode="short"
                           todayStr={todayStr}
                           handlers={rowHandlers}
@@ -2019,6 +2095,7 @@ export default function App() {
                   <TaskRow
                     key={t.id}
                     task={t}
+                    tagName={tagLabel(t)}
                     dateMode="short"
                     density={rowDensity}
                     todayStr={todayStr}
@@ -2144,6 +2221,7 @@ export default function App() {
                     <li>タスク名を押すと詳細画面が開きます。「予定を作成」でその日の予定を詳細入力で作れます。</li>
                     <li>上の「達成状況」の絞り込みと「期日」の並べ替え（押すたびに昇順・降順）は、ほかのタブと共通です。</li>
                     <li>アプリを開いたとき（または日付が変わったあとで画面に戻ったとき）、昨日以前の未完了タスクは自動で今日の日付に移します。完了したタスクと日付のないタスクはそのままです。</li>
+                    <li>タスク内容の右の「タグ」で分類できます（初期値は設定の「タグ」で選べます。最初は空欄）。入力を確定したあと Enter で登録します（変換中の Enter では登録しません）。</li>
                     <li>パソコンの広い画面（横1280px以上）では5日を横1列に並べ、タスクを詰めて表示します（日付ボタンを押すとカレンダーで日付を変更できます）。各日の「N件・未完了M」が件数、「▼ スクロールで あとN件」が出たらカードの中をスクロールできます。完了したタスクは「✓ 完了 N件」を押すと表示されます。表示密度と折りたたみは設定で変えられます。</li>
                   </ul>
                   <div className="mt-5 flex justify-end">
@@ -2571,6 +2649,99 @@ export default function App() {
               </div>
             </div>
 
+            {/* タグ（v0.7.1） */}
+            <div className="mb-6" id="settings-tags">
+              <h3 className="text-xs font-bold text-zinc-400 dark:text-zinc-500 mb-2.5 uppercase tracking-wider">
+                タグ
+              </h3>
+              <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl flex flex-col gap-3">
+                <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
+                  クイック入力と詳細画面で使うタグです。右側の○で、新規タスクの初期値にするタグを選べます。最初は「プライベート」「仕事」「空欄」があり、初期値は空欄です。「空欄」はタグなしで、削除できません。
+                </p>
+                <ul className="flex flex-col gap-2" id="tag-list">
+                  {tagSettings.tags.map((t) => (
+                    <li key={t.id} className="flex items-center gap-2" id={`tag-row-${t.id}`}>
+                      <label className="flex items-center gap-1.5 flex-none cursor-pointer" title="新規タスクの初期値にする">
+                        <input
+                          type="radio"
+                          name="default-tag"
+                          id={`tag-default-${t.id}`}
+                          checked={tagSettings.defaultTagId === t.id}
+                          onChange={() => persistTagSettings(setDefaultTag(tagSettings, t.id).settings)}
+                          className="accent-zinc-900 dark:accent-zinc-100"
+                        />
+                        <span className="sr-only">初期値</span>
+                      </label>
+                      {t.isBlank || t.id === BLANK_TAG_ID ? (
+                        <span className="flex-1 h-9 px-3 flex items-center text-sm font-bold text-zinc-500 dark:text-zinc-400 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg" id={`tag-name-${t.id}`}>空欄</span>
+                      ) : (
+                        <input
+                          id={`tag-name-${t.id}`}
+                          type="text"
+                          defaultValue={t.name}
+                          key={`${t.id}:${t.name}`}
+                          onBlur={(e) => {
+                            if (e.target.value.trim() === t.name) return;
+                            const r = renameTag(tagSettings, t.id, e.target.value);
+                            if (r.error) { setTagSettingsError(r.error); e.target.value = t.name; return; }
+                            persistTagSettings(r.settings);
+                          }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
+                          className="flex-1 min-w-0 h-9 px-3 text-sm font-bold bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg text-zinc-800 dark:text-zinc-100"
+                        />
+                      )}
+                      {!(t.isBlank || t.id === BLANK_TAG_ID) && (
+                        <button
+                          type="button"
+                          id={`btn-tag-delete-${t.id}`}
+                          onClick={() => {
+                            const used = tasks.filter((task) => task.status !== 'deleted' && task.tagId === t.id).length;
+                            const ok = used > 0
+                              ? window.confirm(`「${t.name}」が付いているタスクが ${used}件あります。削除すると、それらのタグは空欄になります。削除しますか？`)
+                              : window.confirm(`タグ「${t.name}」を削除しますか？`);
+                            if (!ok) return;
+                            const r = deleteTag(tagSettings, tasks, t.id);
+                            if (r.error) { setTagSettingsError(r.error); return; }
+                            persistTagSettings(r.settings);
+                            if (r.movedCount > 0) updateTasksState(r.tasks);
+                          }}
+                          className="flex-none h-9 px-2 rounded-lg text-xs font-bold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40"
+                        >
+                          削除
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+                <form
+                  className="flex items-center gap-2 pt-1 border-t border-zinc-200/60 dark:border-zinc-800"
+                  id="form-add-tag"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const r = addTag(tagSettings, newTagName);
+                    if (r.error) { setTagSettingsError(r.error); return; }
+                    persistTagSettings(r.settings);
+                    setNewTagName('');
+                  }}
+                >
+                  <input
+                    id="new-tag-name"
+                    type="text"
+                    value={newTagName}
+                    onChange={(e) => setNewTagName(e.target.value)}
+                    placeholder="新しいタグ名"
+                    className="flex-1 min-w-0 h-9 px-3 text-sm font-bold bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg"
+                  />
+                  <button type="submit" id="btn-add-tag" className="flex-none h-9 px-3 rounded-lg text-xs font-bold bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950">
+                    追加
+                  </button>
+                </form>
+                {tagSettingsError && (
+                  <p className="text-[0.8125rem] font-bold text-red-600 dark:text-red-400" id="tag-settings-error">{tagSettingsError}</p>
+                )}
+              </div>
+            </div>
+
             {/* Daily view setting（7日間の表示 v0.6.8） */}
             <div className="mb-6" id="settings-daily-view">
               <h3 className="text-xs font-bold text-zinc-400 dark:text-zinc-500 mb-2.5 uppercase tracking-wider">
@@ -2727,6 +2898,7 @@ export default function App() {
         {currentView === 'detail' && (
           <div className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl px-4 pt-4 sm:px-6 sm:pt-6 shadow-xs max-w-2xl w-full mx-auto animate-fade-in" id="view-detail-container">
             <TaskForm
+              tagSettings={tagSettings}
               task={tasks.find((t) => t.id === editingTaskId) || null}
               defaultDate={selectedDate}
               onSave={handleSaveTaskDetails}
@@ -2841,12 +3013,43 @@ export default function App() {
                     required
                     value={quickTitle}
                     onChange={(e) => handleQuickTitleChange(e.target.value)}
+                    onCompositionStart={() => { quickComposingRef.current = true; }}
+                    onCompositionEnd={() => { quickComposingRef.current = false; }}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return;
+                      if (!shouldRegisterOnEnter(e) || quickComposingRef.current) return;
+                      e.preventDefault();
+                      handleQuickAdd(e);
+                    }}
                     placeholder="予定を自動判定で登録..."
+                    enterKeyHint="done"
+                    autoComplete="off"
                     className="w-full h-10 px-2.5 sm:px-3.5 text-xs bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-1 focus:ring-zinc-900 dark:focus:ring-zinc-200 text-zinc-800 dark:text-zinc-100 font-semibold"
                   />
                 </div>
 
-                {/* 4. Scheduled Date Input */}
+                {/* 4. タグ（v0.7.1） */}
+                <div className="relative flex-none w-[5.6rem] sm:w-32">
+                  <label className="hidden sm:block text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-tag">
+                    タグ
+                  </label>
+                  <select
+                    id="quick-tag"
+                    aria-label="タグ"
+                    value={quickTagId}
+                    onChange={(e) => setQuickTagId(e.target.value)}
+                    className={`w-full h-10 pl-2 pr-5 sm:pl-3 appearance-none text-xs bg-zinc-50 dark:bg-zinc-950 border rounded-xl focus:outline-none font-bold truncate ${
+                      isBlankTagId(quickTagId) ? 'border-zinc-200 dark:border-zinc-800 text-zinc-400 dark:text-zinc-500' : 'border-zinc-900 dark:border-zinc-200 text-zinc-900 dark:text-zinc-50'
+                    }`}
+                  >
+                    {tagSettings.tags.map((t) => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-1.5 bottom-3 w-3.5 h-3.5 text-zinc-400" />
+                </div>
+
+                {/* 5. Scheduled Date Input */}
                 <div className="hidden sm:block w-full md:w-40">
                   <label className="block text-[0.8125rem] font-bold text-zinc-400 dark:text-zinc-500 mb-1" htmlFor="quick-date">
                     実施予定日
@@ -2860,15 +3063,9 @@ export default function App() {
                   />
                 </div>
 
-                {/* Quick Add Submit Button */}
-                <button
-                  type="submit"
-                  className="h-10 w-10 sm:w-auto sm:px-5 bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950 rounded-xl text-xs font-bold hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-1 shadow-sm flex-none"
-                  id="btn-quick-add"
-                  aria-label="追加"
-                >
-                  <Plus className="w-5 h-5 sm:w-4 sm:h-4" />
-                  <span className="hidden sm:inline">追加</span>
+                {/* 登録は Enter（IME 確定の Enter は除く）。見た目の＋ボタンは置かない（v0.7.1） */}
+                <button type="submit" id="btn-quick-add" className="sr-only" tabIndex={-1}>
+                  登録
                 </button>
 
               </form>

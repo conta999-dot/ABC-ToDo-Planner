@@ -2,11 +2,13 @@ import {
   collection,
   doc,
   onSnapshot,
+  setDoc,
   writeBatch,
   Unsubscribe,
 } from 'firebase/firestore';
-import { Task } from '../types';
+import { Task, TagSettings } from '../types';
 import { db } from './firebase';
+import { normalizeTagSettings } from './tags';
 
 const tasksCol = (uid: string) => collection(db, 'users', uid, 'tasks');
 
@@ -34,6 +36,7 @@ const stripUndefined = (task: Task): Record<string, unknown> => {
   // カレンダーのエクスポート記録（任意項目。古いデータには無い）
   if (task.calendarExported) payload.calendarExported = true;
   if (task.calendarExportedAt) payload.calendarExportedAt = task.calendarExportedAt;
+  if (task.tagId) payload.tagId = task.tagId;
   return payload;
 };
 
@@ -60,6 +63,7 @@ const fromFirestore = (data: Record<string, unknown>, fallbackId: string): Task 
     copiedFromId: (data.copiedFromId as string | null) || undefined,
     calendarExported: data.calendarExported === true ? true : undefined,
     calendarExportedAt: typeof data.calendarExportedAt === 'string' ? data.calendarExportedAt : undefined,
+    tagId: typeof data.tagId === 'string' && data.tagId ? data.tagId : undefined,
   };
 };
 
@@ -117,4 +121,36 @@ export const pushUserTasks = async (uid: string, tasks: Task[]): Promise<void> =
     }
     await batch.commit();
   }
+};
+
+
+const tagsDoc = (uid: string) => doc(db, 'users', uid, 'settings', 'tags');
+
+export const subscribeToUserTagSettings = (
+  uid: string,
+  onChange: (settings: TagSettings | null) => void,
+  onError?: (error: Error) => void,
+): Unsubscribe => {
+  return onSnapshot(
+    tagsDoc(uid),
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        onChange(null);
+        return;
+      }
+      onChange(normalizeTagSettings(snapshot.data() as Record<string, unknown>));
+    },
+    (error) => {
+      console.error('タグ設定の購読エラー:', error);
+      if (onError) onError(error);
+    },
+  );
+};
+
+export const pushUserTagSettings = async (uid: string, settings: TagSettings): Promise<void> => {
+  await setDoc(tagsDoc(uid), {
+    tags: settings.tags.map((t) => (t.isBlank ? { id: t.id, name: t.name, isBlank: true } : { id: t.id, name: t.name })),
+    defaultTagId: settings.defaultTagId,
+    updatedAt: settings.updatedAt,
+  });
 };

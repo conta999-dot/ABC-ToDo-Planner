@@ -31,6 +31,26 @@ export interface Task {
   /** カレンダーへエクスポート済みフラグ（端末に関係なく1回だけ。立った後はカレンダーに一切触らない） */
   calendarExported?: boolean;
   calendarExportedAt?: string;   // エクスポートした日時（ISO文字列）
+  /** タグID（未設定・空欄タグはなし／空欄と同じ） */
+  tagId?: string;
+}
+
+/** タスクのタグ（v0.7.1〜）。空欄は削除できない固定項目 */
+export const BLANK_TAG_ID = 'tag-blank';
+export const PRIVATE_TAG_ID = 'tag-private';
+export const WORK_TAG_ID = 'tag-work';
+
+export interface Tag {
+  id: string;
+  name: string;
+  /** 空欄（タグなし）。削除・改名不可 */
+  isBlank?: boolean;
+}
+
+export interface TagSettings {
+  tags: Tag[];
+  defaultTagId: string;
+  updatedAt: string;
 }
 
 export const getTaskQuadrant = (priorityLetter: PriorityLetter, priorityNumber: number | null): TaskQuadrant => {

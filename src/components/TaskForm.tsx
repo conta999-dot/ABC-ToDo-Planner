@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, Calendar, CalendarCheck, Bell, Info, Check, Trash2 } from 'lucide-react';
-import { Task, PriorityLetter, TaskStatus, getTaskQuadrant, TASK_STATUS_OPTIONS } from '../types';
+import { Task, PriorityLetter, TaskStatus, getTaskQuadrant, TASK_STATUS_OPTIONS, TagSettings, BLANK_TAG_ID } from '../types';
 import { getDailyNotifyTime } from '../lib/reminder';
 import { getLocalDateString } from '../lib/dates';
 
@@ -10,9 +10,10 @@ interface TaskFormProps {
   onSave: (taskData: Omit<Task, 'id' | 'userId' | 'createdAt' | 'updatedAt'>) => void;
   onCancel: () => void;
   onDelete?: (id: string) => void;
+  tagSettings: TagSettings;
 }
 
-export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete }: TaskFormProps) {
+export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete, tagSettings }: TaskFormProps) {
   const [title, setTitle] = useState('');
   const [notes, setNotes] = useState('');
   const [priorityLetter, setPriorityLetter] = useState<PriorityLetter>('');
@@ -23,6 +24,7 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
   const [status, setStatus] = useState<TaskStatus>('pending');
   const [completedDate, setCompletedDate] = useState('');
   const [showQuadrantInfo, setShowQuadrantInfo] = useState(false);
+  const [tagId, setTagId] = useState<string>(BLANK_TAG_ID);
 
   // Load task values if editing
   useEffect(() => {
@@ -36,6 +38,7 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
       setReminderEnabled(task.reminderEnabled);
       setStatus(task.status || 'pending');
       setCompletedDate(task.completedDate || '');
+      setTagId(task.tagId || BLANK_TAG_ID);
     } else {
       setTitle('');
       setNotes('');
@@ -47,8 +50,9 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
       setReminderEnabled(true);
       setStatus('pending');
       setCompletedDate('');
+      setTagId(tagSettings.defaultTagId || BLANK_TAG_ID);
     }
-  }, [task, defaultDate]);
+  }, [task, defaultDate, tagSettings.defaultTagId]);
 
   const handleTitleChange = (val: string) => {
     setTitle(val);
@@ -185,6 +189,7 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
       status,
       completedAt: status === 'completed' ? (task?.completedAt || new Date().toISOString()) : null,
       completedDate: status === 'completed' ? (completedDate || getLocalDateString()) : '',
+      tagId: tagId || BLANK_TAG_ID,
     });
   };
 
@@ -306,7 +311,7 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
           )}
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
           {/* Due Date */}
           <div>
             <label className="block text-xs font-bold text-zinc-400 dark:text-zinc-500 mb-1.5" htmlFor="task-due-date">
@@ -323,6 +328,23 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
                 className="w-full pl-9 pr-3 py-2 text-sm bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-950 dark:focus:ring-zinc-300 text-zinc-900 dark:text-zinc-50 font-medium"
               />
             </div>
+          </div>
+
+          {/* Tag (v0.7.1) */}
+          <div>
+            <label className="block text-xs font-bold text-zinc-400 dark:text-zinc-500 mb-1.5" htmlFor="task-tag">
+              タグ
+            </label>
+            <select
+              id="task-tag"
+              value={tagId}
+              onChange={(e) => setTagId(e.target.value)}
+              className="w-full px-3 py-2 text-sm bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-950 dark:focus:ring-zinc-300 text-zinc-900 dark:text-zinc-50 font-semibold"
+            >
+              {tagSettings.tags.map((t) => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
           </div>
 
           {/* Status Selection (Core User Request) */}

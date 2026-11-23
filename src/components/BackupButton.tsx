@@ -88,7 +88,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
   };
 
   // CSV Export（Excel 互換。読込時に元へ戻せるよう完了日・更新日時・カレンダー登録済も出力）
-  const CSV_HEADERS = ['ID', 'タイトル', 'メモ', '優先度(英字)', '優先度(数字)', '領域', '期限', '通知時間', '通知有効', 'ステータス', '完了日時', '作成日時', '完了日', '更新日時', 'カレンダー登録済', 'カレンダー登録日時'];
+  const CSV_HEADERS = ['ID', 'タイトル', 'メモ', '優先度(英字)', '優先度(数字)', '領域', '期限', '通知時間', '通知有効', 'ステータス', '完了日時', '作成日時', '完了日', '更新日時', 'カレンダー登録済', 'カレンダー登録日時', 'タグID'];
   const handleExportCSV = () => {
     const rows = tasks.map((task) => [
       task.id,
@@ -107,6 +107,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
       task.updatedAt || '',
       task.calendarExported ? '1' : '0',
       task.calendarExportedAt || '',
+      task.tagId || '',
     ]);
     const csvContent = [
       CSV_HEADERS.join(','),
@@ -219,6 +220,7 @@ export default function BackupButton({ tasks, onImport }: BackupButtonProps) {
         updatedAt: values[13] || nowIso,
         calendarExported: csvExported || prev?.calendarExported || undefined,
         calendarExportedAt: values[15] || prev?.calendarExportedAt,
+        tagId: values[16] || prev?.tagId || undefined,
       } as Task);
     }
     if (imported.length > 0) {

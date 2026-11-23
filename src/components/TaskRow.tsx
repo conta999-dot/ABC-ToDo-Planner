@@ -286,6 +286,7 @@ export function TaskRow({
   isDragging = false,
   showNotes = false,
   density,
+  tagName,
 }: {
   task: Task;
   todayStr: string;
@@ -296,6 +297,8 @@ export function TaskRow({
   showNotes?: boolean;
   /** v0.6.8: PC のデイリー用。'one'=1行に詰める / 'two'=2行まで（v0.6.9 から日付ボタンも表示） */
   density?: 'one' | 'two';
+  /** 空欄以外のタグ名（あれば小さなチップで表示） */
+  tagName?: string;
 }) {
   const isCompleted = task.status === 'completed';
   const isDeleted = task.status === 'deleted';
@@ -322,6 +325,14 @@ export function TaskRow({
         title={density ? `${task.title}（クリックで詳細）` : 'タップで詳細を開く'}
       >
         {task.title}
+        {tagName && (
+          <span
+            className="ml-1 inline-flex align-middle max-w-[5.5rem] truncate text-[0.6875rem] font-black px-1 py-px rounded bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300 align-middle"
+            title={`タグ: ${tagName}`}
+          >
+            {tagName}
+          </span>
+        )}
         {task.calendarExported && (
           <CalendarCheck className="ml-1 inline w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 align-middle" aria-label="カレンダー登録済" />
         )}
