@@ -44,6 +44,7 @@ import {
   buildDailySummary,
 } from './lib/reminder';
 import { getLocalDateString, addDays, newTaskId, parseLocalDate } from './lib/dates';
+import { carryOverOverdueTasks } from './lib/carryOver';
 import { initAuth, googleSignIn, logout as firebaseLogout } from './lib/firebase';
 import {
   buildEventTitle,
@@ -489,6 +490,7 @@ export default function App() {
     });
 
   const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator === 'undefined' ? true : navigator.onLine);
   const [lastSyncTime, setLastSyncTime] = useState<string | null>(null);
   const [syncError, setSyncErrorText] = useState<string | null>(null);
@@ -648,14 +650,22 @@ export default function App() {
       (user) => {
         authUserRef.current = user;
         setAuthUser(user);
+        setAuthReady(true);
       },
       () => {
         authUserRef.current = null;
         setAuthUser(null);
+        setAuthReady(true);
       }
     );
     return () => unsub();
   }, []);
+
+  useEffect(() => {
+    if (!authReady || authUser) return;
+    carryOverReadyRef.current = true;
+    runCarryOverRef.current(getLocalTasks());
+  }, [authReady, authUser]);
 
   useEffect(() => {
     let cancelled = false;
@@ -705,8 +715,15 @@ export default function App() {
           applyingRemoteRef.current = false;
         };
 
+        const finishInitial = (list: Task[]) => {
+          if (!initialMergeDone) {
+            initialMergeDone = true;
+            carryOverReadyRef.current = true;
+            runCarryOverRef.current(list);
+          }
+        };
+
         if (!initialMergeDone) {
-          initialMergeDone = true;
           const local = getLocalTasks();
           if (local.length > 0) {
             const { merged } = mergeTasks(local, cloudTasks);
@@ -722,16 +739,23 @@ export default function App() {
                 })
                 .finally(() => setIsSyncing(false));
               applyRemote(merged);
+              finishInitial(merged);
               return;
             }
           }
         }
 
         applyRemote(cloudTasks);
+        finishInitial(cloudTasks);
       },
       (error) => {
         setSyncError('クラウド（Firestore）との同期に失敗しました。', error);
         applyingRemoteRef.current = false;
+        if (!initialMergeDone) {
+          initialMergeDone = true;
+          carryOverReadyRef.current = true;
+          runCarryOverRef.current(getLocalTasks());
+        }
       }
     );
     return () => {
@@ -745,6 +769,7 @@ export default function App() {
     let handle: { remove: () => void } | undefined;
     void CapApp.addListener('appStateChange', ({ isActive }) => {
       if (isActive) {
+        maybeCarryOnResume();
         void rescheduleNativeReminders(getLocalTasks());
         void runDailyBackup(true);
       }
@@ -756,6 +781,18 @@ export default function App() {
     return () => {
       handle?.remove();
       clearTimeout(t);
+    };
+  }, []);
+
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible') maybeCarryOnResume();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', maybeCarryOnResume);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', maybeCarryOnResume);
     };
   }, []);
 
@@ -808,6 +845,27 @@ export default function App() {
         })
         .finally(() => setIsSyncing(false));
     }
+  };
+
+  // v0.7.0: 昨日以前の未完了タスクを今日へ移す。初回の読み込み／同期が終わってからだけ動かす
+  const lastCarryDateRef = useRef<string | null>(null);
+  const carryOverReadyRef = useRef(false);
+  const runCarryOverRef = useRef<(list?: Task[]) => number>(() => 0);
+  runCarryOverRef.current = (list?: Task[]) => {
+    const today = getLocalDateString();
+    const source = list ?? getLocalTasks();
+    const { tasks: next, movedCount } = carryOverOverdueTasks(source, today);
+    lastCarryDateRef.current = today;
+    if (movedCount === 0) return 0;
+    updateTasksState(next);
+    showToast(`未完了のタスク ${movedCount}件を今日に移しました`);
+    return movedCount;
+  };
+  const maybeCarryOnResume = () => {
+    if (!carryOverReadyRef.current) return;
+    const today = getLocalDateString();
+    if (lastCarryDateRef.current === today) return;
+    runCarryOverRef.current();
   };
 
   // --- Trigger Confetti ---
@@ -2085,6 +2143,7 @@ export default function App() {
                     <li>達成状況・重要度・緊急度はプルダウンでその場で変更できます。日付を押すとカレンダーが開き、日付を変更できます。</li>
                     <li>タスク名を押すと詳細画面が開きます。「予定を作成」でその日の予定を詳細入力で作れます。</li>
                     <li>上の「達成状況」の絞り込みと「期日」の並べ替え（押すたびに昇順・降順）は、ほかのタブと共通です。</li>
+                    <li>アプリを開いたとき（または日付が変わったあとで画面に戻ったとき）、昨日以前の未完了タスクは自動で今日の日付に移します。完了したタスクと日付のないタスクはそのままです。</li>
                     <li>パソコンの広い画面（横1280px以上）では5日を横1列に並べ、タスクを詰めて表示します（日付ボタンを押すとカレンダーで日付を変更できます）。各日の「N件・未完了M」が件数、「▼ スクロールで あとN件」が出たらカードの中をスクロールできます。完了したタスクは「✓ 完了 N件」を押すと表示されます。表示密度と折りたたみは設定で変えられます。</li>
                   </ul>
                   <div className="mt-5 flex justify-end">
