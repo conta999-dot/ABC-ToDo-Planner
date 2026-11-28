@@ -4,6 +4,7 @@
  * - タスク内容をタップ／クリックすると詳細画面へ
  * - 日付をタップ／クリックするとカレンダー（日付選択）が開く
  */
+import { findTagColor, tagColorStyle } from '../lib/tagColors';
 import React, { useRef } from 'react';
 import { ArrowDown, ArrowUp, ArrowUpDown, CalendarDays, CalendarCheck } from 'lucide-react';
 import { PriorityLetter, Task, TaskStatus } from '../types';
@@ -287,6 +288,7 @@ export function TaskRow({
   showNotes = false,
   density,
   tagName,
+  tagColor,
 }: {
   task: Task;
   todayStr: string;
@@ -299,6 +301,8 @@ export function TaskRow({
   density?: 'one' | 'two';
   /** 空欄以外のタグ名（あれば小さなチップで表示） */
   tagName?: string;
+  /** タグの色キー（タスク名の文字色に使う。完了・削除したタスクは今までどおりの灰色／赤） */
+  tagColor?: string;
 }) {
   const isCompleted = task.status === 'completed';
   const isDeleted = task.status === 'deleted';
@@ -319,9 +323,10 @@ export function TaskRow({
           e.stopPropagation();
           handlers.onOpen(task.id);
         }}
-        className={`row-title min-w-0 text-left text-[0.875rem] font-semibold leading-snug break-words hover:underline cursor-pointer text-zinc-800 dark:text-zinc-100 ${
-          isCompleted ? 'line-through text-zinc-400 dark:text-zinc-500' : ''
-        } ${isDeleted ? 'line-through text-red-500' : ''}`}
+        style={isCompleted || isDeleted ? undefined : tagColorStyle(tagColor)}
+        className={`row-title min-w-0 text-left text-[0.875rem] font-semibold leading-snug break-words hover:underline cursor-pointer ${
+          !isCompleted && !isDeleted && findTagColor(tagColor) ? 'tag-colored' : 'text-zinc-800 dark:text-zinc-100'
+        } ${isCompleted ? 'line-through text-zinc-400 dark:text-zinc-500' : ''} ${isDeleted ? 'line-through text-red-500' : ''}`}
         title={density ? `${task.title}（クリックで詳細）` : 'タップで詳細を開く'}
       >
         {task.title}

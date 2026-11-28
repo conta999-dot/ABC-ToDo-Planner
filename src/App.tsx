@@ -45,12 +45,14 @@ import {
 } from './lib/reminder';
 import { getLocalDateString, addDays, newTaskId, parseLocalDate } from './lib/dates';
 import { titleAfterPriorityPrefix } from './lib/priorityPrefix';
+import { TAG_COLORS } from './lib/tagColors';
 import { carryOverOverdueTasks } from './lib/carryOver';
 import {
   loadLocalTagSettings,
   saveLocalTagSettings,
   addTag,
   renameTag,
+  setTagColor,
   deleteTag,
   setDefaultTag,
   findTag,
@@ -1537,6 +1539,11 @@ export default function App() {
     const tag = findTag(tagSettings, task.tagId);
     return tag.isBlank || isBlankTagId(tag.id) ? undefined : tag.name;
   };
+  // v0.7.3: タスク名の文字色。タスクは1つのタグだけを持つので、そのタグの色を使う（空欄・色なしは今までどおり）
+  const tagColorOf = (task: Task) => {
+    const tag = findTag(tagSettings, task.tagId);
+    return tag.isBlank || isBlankTagId(tag.id) ? undefined : tag.color;
+  };
 
   const rowHandlers: TaskRowHandlers = {
     onStatus: (taskId, status) => handleUpdateTaskFieldDirect(taskId, 'status', status),
@@ -1766,6 +1773,7 @@ export default function App() {
                       key={task.id}
                       task={task}
                       tagName={tagLabel(task)}
+                      tagColor={tagColorOf(task)}
                       dateMode={isWide ? 'full' : 'short'}
                       showNotes={isWide}
                       todayStr={todayStr}
@@ -1832,7 +1840,8 @@ export default function App() {
                               key={t.id}
                               task={t}
                               tagName={tagLabel(t)}
-                              dateMode={isXL ? 'short' : 'icon'}
+                              tagColor={tagColorOf(t)}
+                              dateMode="short"
                               todayStr={todayStr}
                               handlers={rowHandlers}
                               dragProps={drag.bind(t.id, t.title)}
@@ -1910,6 +1919,7 @@ export default function App() {
                           key={t.id}
                           task={t}
                           tagName={tagLabel(t)}
+                          tagColor={tagColorOf(t)}
                           dateMode="short"
                           todayStr={todayStr}
                           handlers={rowHandlers}
@@ -2059,6 +2069,7 @@ export default function App() {
                     key={t.id}
                     task={t}
                     tagName={tagLabel(t)}
+                    tagColor={tagColorOf(t)}
                     dateMode="short"
                     density={rowDensity}
                     todayStr={todayStr}
@@ -2619,11 +2630,11 @@ export default function App() {
               </h3>
               <div className="p-4 bg-zinc-50 dark:bg-zinc-950 border border-zinc-150 dark:border-zinc-850 rounded-xl flex flex-col gap-3">
                 <p className="text-[0.875rem] text-zinc-500 dark:text-zinc-400 leading-normal font-semibold">
-                  クイック入力と詳細画面で使うタグです。右側の○で、新規タスクの初期値にするタグを選べます。最初は「プライベート」「仕事」「空欄」があり、初期値は空欄です。「空欄」はタグなしで、削除できません。
+                  クイック入力と詳細画面で使うタグです。左側の○で、新規タスクの初期値にするタグを選べます。色の丸（×は色なし）を押すと、そのタグが付いたタスク名の文字がデイリー・4つの領域・一覧でその色になります（完了したタスクは今までどおりの灰色）。最初は「プライベート」「仕事」「空欄」があり、初期値は空欄です。「空欄」はタグなしで、削除できません。
                 </p>
                 <ul className="flex flex-col gap-2" id="tag-list">
                   {tagSettings.tags.map((t) => (
-                    <li key={t.id} className="flex items-center gap-2" id={`tag-row-${t.id}`}>
+                    <li key={t.id} className="flex flex-wrap items-center gap-x-2 gap-y-1.5" id={`tag-row-${t.id}`}>
                       <label className="flex items-center gap-1.5 flex-none cursor-pointer" title="新規タスクの初期値にする">
                         <input
                           type="radio"
@@ -2652,6 +2663,34 @@ export default function App() {
                           onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); (e.target as HTMLInputElement).blur(); } }}
                           className="flex-1 min-w-0 h-9 px-3 text-sm font-bold bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg text-zinc-800 dark:text-zinc-100"
                         />
+                      )}
+                      {!(t.isBlank || t.id === BLANK_TAG_ID) && (
+                        <div className="flex flex-wrap items-center gap-1.5 basis-full order-last pl-6" role="group" aria-label={`${t.name}の色`} id={`tag-colors-${t.id}`}>
+                          <button
+                            type="button"
+                            id={`tag-color-none-${t.id}`}
+                            title="色なし"
+                            aria-label="色なし"
+                            aria-pressed={!t.color}
+                            onClick={() => persistTagSettings(setTagColor(tagSettings, t.id, null).settings)}
+                            className={`w-6 h-6 rounded-full border text-[0.625rem] leading-none font-black text-zinc-400 bg-white dark:bg-zinc-900 ${!t.color ? 'border-zinc-900 dark:border-zinc-100 ring-2 ring-zinc-400/50' : 'border-zinc-300 dark:border-zinc-700'}`}
+                          >
+                            ×
+                          </button>
+                          {TAG_COLORS.map((c) => (
+                            <button
+                              key={c.key}
+                              type="button"
+                              id={`tag-color-${c.key}-${t.id}`}
+                              title={c.label}
+                              aria-label={`${t.name}の色を${c.label}にする`}
+                              aria-pressed={t.color === c.key}
+                              onClick={() => persistTagSettings(setTagColor(tagSettings, t.id, c.key).settings)}
+                              style={{ backgroundColor: darkMode ? c.dark : c.light }}
+                              className={`w-6 h-6 rounded-full border ${t.color === c.key ? 'border-zinc-900 dark:border-zinc-100 ring-2 ring-zinc-400/60' : 'border-transparent'}`}
+                            />
+                          ))}
+                        </div>
                       )}
                       {!(t.isBlank || t.id === BLANK_TAG_ID) && (
                         <button
@@ -2862,6 +2901,7 @@ export default function App() {
           <div className="bg-white dark:bg-zinc-900 border border-zinc-200/60 dark:border-zinc-800 rounded-2xl px-4 pt-4 sm:px-6 sm:pt-6 shadow-xs max-w-2xl w-full mx-auto animate-fade-in" id="view-detail-container">
             <TaskForm
               tagSettings={tagSettings}
+              nextNumberOnDate={getNextNumberOnDate}
               task={tasks.find((t) => t.id === editingTaskId) || null}
               defaultDate={selectedDate}
               onSave={handleSaveTaskDetails}
@@ -3054,6 +3094,7 @@ export default function App() {
                     <span className="truncate">
                       {r.source === 'manual' ? '選択' : r.source === 'auto' ? 'タスク内容の指定' : '既定（B＋その日の次の番号）'}: {pr}・{qLabel}
                       {r.source === 'auto' && (quickLetter !== '' || quickNumber !== null) ? '（プルダウンより優先）' : ''}
+                      ・完了予定 {(pd.dueDate || selectedDate).slice(5).replace('-', '/')}
                     </span>
                   </div>
                 );

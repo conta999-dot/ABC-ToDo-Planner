@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { X, Calendar, CalendarCheck, Bell, Info, Check, Trash2 } from 'lucide-react';
 import { Task, PriorityLetter, TaskStatus, getTaskQuadrant, TASK_STATUS_OPTIONS, TagSettings, BLANK_TAG_ID } from '../types';
 import { getDailyNotifyTime } from '../lib/reminder';
@@ -12,9 +12,11 @@ interface TaskFormProps {
   onCancel: () => void;
   onDelete?: (id: string) => void;
   tagSettings: TagSettings;
+  /** 新規タスクの初期緊急度: その日の指定した重要度の緊急度の最大＋1（無ければ1） */
+  nextNumberOnDate?: (letter: PriorityLetter, date: string) => number;
 }
 
-export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete, tagSettings }: TaskFormProps) {
+export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete, tagSettings, nextNumberOnDate }: TaskFormProps) {
   const [title, setTitle] = useState('');
   const [notes, setNotes] = useState('');
   const [priorityLetter, setPriorityLetter] = useState<PriorityLetter>('');
@@ -26,6 +28,8 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
   const [completedDate, setCompletedDate] = useState('');
   const [showQuadrantInfo, setShowQuadrantInfo] = useState(false);
   const [tagId, setTagId] = useState<string>(BLANK_TAG_ID);
+  // 利用者が重要度・緊急度を触ったら、日付を変えても自動で付け直さない
+  const priorityTouchedRef = useRef(false);
 
   // Load task values if editing
   useEffect(() => {
@@ -43,9 +47,12 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
     } else {
       setTitle('');
       setNotes('');
-      setPriorityLetter('');
-      setPriorityNumber(null);
-      setDueDate(defaultDate || getLocalDateString());
+      // v0.7.3: 新規タスクは重要度 B、緊急度はその日の B の最大＋1（明示した A3 / 5 などがあればそちらが優先）
+      const initialDate = defaultDate || getLocalDateString();
+      setPriorityLetter('B');
+      setPriorityNumber(nextNumberOnDate ? nextNumberOnDate('B', initialDate) : 1);
+      priorityTouchedRef.current = false;
+      setDueDate(initialDate);
       // 新規タスク: 設定の通知時刻を初期値にして通知ON（v0.6.5〜。既存タスクは変更しない）
       setReminderTime(getDailyNotifyTime());
       setReminderEnabled(true);
@@ -60,6 +67,7 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
 
     const parsed = parsePriorityPrefix(val);
     if (parsed.matched) {
+      priorityTouchedRef.current = true;
       setPriorityLetter(parsed.letter);
       setPriorityNumber(parsed.number);
     }
@@ -159,7 +167,7 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
             <select
               id="task-priority-letter"
               value={priorityLetter}
-              onChange={(e) => setPriorityLetter(e.target.value as PriorityLetter)}
+              onChange={(e) => { priorityTouchedRef.current = true; setPriorityLetter(e.target.value as PriorityLetter); }}
               className="w-full px-3 py-2 text-sm bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-950 dark:focus:ring-zinc-300 text-zinc-900 dark:text-zinc-50 font-semibold"
             >
               <option value="">なし</option>
@@ -176,7 +184,7 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
             <select
               id="task-priority-number"
               value={priorityNumber === null ? '' : priorityNumber}
-              onChange={(e) => setPriorityNumber(e.target.value === '' ? null : parseInt(e.target.value, 10))}
+              onChange={(e) => { priorityTouchedRef.current = true; setPriorityNumber(e.target.value === '' ? null : parseInt(e.target.value, 10)); }}
               className="w-full px-3 py-2 text-sm bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-950 dark:focus:ring-zinc-300 text-zinc-900 dark:text-zinc-50 font-semibold"
             >
               <option value="">なし</option>
@@ -243,7 +251,14 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
                 type="date"
                 required
                 value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setDueDate(v);
+                  // 新規タスクで重要度・緊急度が初期値のままなら、選んだ日の B の最大＋1 に付け直す
+                  if (!task && v && nextNumberOnDate && !priorityTouchedRef.current && priorityLetter === 'B') {
+                    setPriorityNumber(nextNumberOnDate('B', v));
+                  }
+                }}
                 className="w-full pl-9 pr-3 py-2 text-sm bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-950 dark:focus:ring-zinc-300 text-zinc-900 dark:text-zinc-50 font-medium"
               />
             </div>

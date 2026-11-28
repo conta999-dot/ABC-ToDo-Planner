@@ -149,7 +149,7 @@ export const subscribeToUserTagSettings = (
 
 export const pushUserTagSettings = async (uid: string, settings: TagSettings): Promise<void> => {
   await setDoc(tagsDoc(uid), {
-    tags: settings.tags.map((t) => (t.isBlank ? { id: t.id, name: t.name, isBlank: true } : { id: t.id, name: t.name })),
+    tags: settings.tags.map((t) => (t.isBlank ? { id: t.id, name: t.name, isBlank: true } : t.color ? { id: t.id, name: t.name, color: t.color } : { id: t.id, name: t.name })),
     defaultTagId: settings.defaultTagId,
     updatedAt: settings.updatedAt,
   });

@@ -1,5 +1,6 @@
 import { BLANK_TAG_ID, PRIVATE_TAG_ID, WORK_TAG_ID, Tag, TagSettings, Task } from '../types';
 import { newTaskId } from './dates';
+import { findTagColor } from './tagColors';
 
 export const TAG_STORAGE_KEY = 'abc_planner_tags_v1';
 export const INITIAL_TAG_UPDATED_AT = '1970-01-01T00:00:00.000Z';
@@ -35,7 +36,8 @@ export const normalizeTagSettings = (raw: unknown, nowIso: string = new Date().t
       continue;
     }
     if (!name) continue;
-    tags.push({ id, name });
+    const color = typeof item.color === 'string' && findTagColor(item.color) ? item.color : undefined;
+    tags.push(color ? { id, name, color } : { id, name });
   }
   if (!tags.some((t) => t.id === BLANK_TAG_ID)) tags.unshift({ ...BLANK_TAG });
   // 空欄は常に先頭
@@ -106,6 +108,26 @@ export const renameTag = (settings: TagSettings, tagId: string, name: string, no
 
 export const countTasksWithTag = (tasks: Task[], tagId: string): number =>
   tasks.filter((t) => t.status !== 'deleted' && t.tagId === tagId).length;
+
+/** タグの文字色を変える（key が空・不明なら色なしに戻す。空欄タグは色なし固定） */
+export const setTagColor = (settings: TagSettings, tagId: string, colorKey: string | null, nowIso: string = new Date().toISOString()): { settings: TagSettings; error?: string } => {
+  const tag = settings.tags.find((t) => t.id === tagId);
+  if (!tag) return { settings, error: 'タグが見つかりません' };
+  if (tag.isBlank || tag.id === BLANK_TAG_ID) return { settings, error: '「空欄」には色を付けられません' };
+  const color = colorKey && findTagColor(colorKey) ? colorKey : undefined;
+  return {
+    settings: {
+      ...settings,
+      tags: settings.tags.map((t) => {
+        if (t.id !== tagId) return t;
+        const { color: _old, ...rest } = t;
+        void _old;
+        return color ? { ...rest, color } : rest;
+      }),
+      updatedAt: nowIso,
+    },
+  };
+};
 
 /** タグを削除する。空欄は削除不可。付いているタスクは空欄（tagId を外す）にする。デフォルトなら空欄に戻す。 */
 export const deleteTag = (

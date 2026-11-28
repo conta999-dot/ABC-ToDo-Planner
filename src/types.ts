@@ -45,6 +45,8 @@ export interface Tag {
   name: string;
   /** 空欄（タグなし）。削除・改名不可 */
   isBlank?: boolean;
+  /** 文字色のキー（v0.7.3〜。無ければ色なし。古いデータとの互換のため任意） */
+  color?: string;
 }
 
 export interface TagSettings {
