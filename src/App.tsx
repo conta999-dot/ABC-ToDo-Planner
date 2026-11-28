@@ -44,6 +44,7 @@ import {
   buildDailySummary,
 } from './lib/reminder';
 import { getLocalDateString, addDays, newTaskId, parseLocalDate } from './lib/dates';
+import { titleAfterPriorityPrefix } from './lib/priorityPrefix';
 import { carryOverOverdueTasks } from './lib/carryOver';
 import {
   loadLocalTagSettings,
@@ -328,43 +329,6 @@ const shortSyncTime = (value: string | null): string => {
   if (!value) return '';
   const m = value.match(/(\d{1,4})\/(\d{1,2})\/(\d{1,2})\s+(\d{1,2}):(\d{2})/);
   return m ? `${m[2]}/${m[3]} ${m[4]}:${m[5]}` : value;
-};
-
-/** 先頭の重要度・緊急度トークン（例: "A3 ", "B ", "5 "）を解析する */
-const parsePriorityPrefix = (text: string): { letter: PriorityLetter; number: number | null; rest: string; matched: boolean; letterOnly: boolean } => {
-  const original = text.trim();
-  const normalized = original.replace(/[Ａ-Ｚａ-ｚ０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
-  const cut = (len: number) => original.substring(len).replace(/^[\s　]+/, '');
-  const both = normalized.match(/^([A-Ca-c])([0-9]{1,2})/);
-  if (both) {
-    const num = parseInt(both[2], 10);
-    if (num >= 1 && num <= 20) {
-      return { letter: both[1].toUpperCase() as PriorityLetter, number: num, rest: cut(1 + both[2].length), matched: true, letterOnly: false };
-    }
-  }
-  const letter = normalized.match(/^([A-Ca-c])(?:[\s　]+|$)/);
-  if (letter) {
-    return { letter: letter[1].toUpperCase() as PriorityLetter, number: null, rest: cut(1), matched: true, letterOnly: true };
-  }
-  const num = normalized.match(/^([0-9]{1,2})/);
-  if (num) {
-    const n = parseInt(num[1], 10);
-    if (n >= 1 && n <= 20) {
-      return { letter: '', number: n, rest: cut(num[1].length), matched: true, letterOnly: false };
-    }
-  }
-  // 文中・文末の「B1」「Ｂ２」なども明示指定として扱う（前後が空白か文頭・文末の独立した語だけ）
-  const mid = normalized.match(/(^|[\s　])([A-Ca-c])([0-9]{1,2})(?=[\s　]|$)/);
-  if (mid && mid.index !== undefined) {
-    const n = parseInt(mid[3], 10);
-    if (n >= 1 && n <= 20) {
-      const start = mid.index + mid[1].length;
-      const end = start + 1 + mid[3].length;
-      const rest = (original.substring(0, start) + original.substring(end)).replace(/[\s　]{2,}/g, ' ').trim();
-      return { letter: mid[2].toUpperCase() as PriorityLetter, number: n, rest, matched: true, letterOnly: false };
-    }
-  }
-  return { letter: '', number: null, rest: original, matched: false, letterOnly: false };
 };
 
 function HeaderStatus({
@@ -1312,9 +1276,8 @@ export default function App() {
    * 3. どちらもなければ既定値: 重要度 B、緊急度はその日の B の最大＋1（登録するたびに B1, B2, B3…）
    */
   const resolveQuickPriority = (titleText: string, date: string = selectedDate): { letter: PriorityLetter; number: number | null; title: string; source: 'manual' | 'auto' | 'default' } => {
-    const parsed = parsePriorityPrefix(titleText);
+    const { parsed, title } = titleAfterPriorityPrefix(titleText);
     const manual = quickLetter !== '' || quickNumber !== null;
-    const title = parsed.matched && parsed.rest.trim() ? parsed.rest : titleText.trim();
     if (parsed.matched) {
       const number = parsed.letterOnly ? (parsed.letter ? getNextNumberOnDate(parsed.letter, date) : null) : parsed.number;
       return { letter: parsed.letter, number, title, source: 'auto' };

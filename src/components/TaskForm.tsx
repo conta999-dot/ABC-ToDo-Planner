@@ -3,6 +3,7 @@ import { X, Calendar, CalendarCheck, Bell, Info, Check, Trash2 } from 'lucide-re
 import { Task, PriorityLetter, TaskStatus, getTaskQuadrant, TASK_STATUS_OPTIONS, TagSettings, BLANK_TAG_ID } from '../types';
 import { getDailyNotifyTime } from '../lib/reminder';
 import { getLocalDateString } from '../lib/dates';
+import { parsePriorityPrefix, titleAfterPriorityPrefix } from '../lib/priorityPrefix';
 
 interface TaskFormProps {
   task?: Task | null; // If provided, we are editing, otherwise creating
@@ -57,44 +58,10 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
   const handleTitleChange = (val: string) => {
     setTitle(val);
 
-    const toHalfWidth = (str: string): string => {
-      return str.replace(/[Ａ-Ｚａ-ｚ０-９]/g, (s) => {
-        return String.fromCharCode(s.charCodeAt(0) - 0xFEE0);
-      });
-    };
-
-    let titleText = val.trim();
-    let normalizedText = toHalfWidth(titleText);
-
-    const matchBoth = normalizedText.match(/^([A-Ca-c])([0-9]{1,2})\s*(.*)$/);
-    if (matchBoth) {
-      const letter = matchBoth[1].toUpperCase() as PriorityLetter;
-      const num = parseInt(matchBoth[2], 10);
-      if (num >= 1 && num <= 20) {
-        setPriorityLetter(letter);
-        setPriorityNumber(num);
-      }
-    } else {
-      const matchLetter = normalizedText.match(/^([A-Ca-c])\s+(.*)$/);
-      const matchLetterEnd = normalizedText.match(/^([A-Ca-c])$/);
-      if (matchLetter) {
-        const letter = matchLetter[1].toUpperCase() as PriorityLetter;
-        setPriorityLetter(letter);
-        setPriorityNumber(null);
-      } else if (matchLetterEnd) {
-        const letter = matchLetterEnd[1].toUpperCase() as PriorityLetter;
-        setPriorityLetter(letter);
-        setPriorityNumber(null);
-      } else {
-        const matchNumber = normalizedText.match(/^([0-9]{1,2})\s*(.*)$/);
-        if (matchNumber) {
-          const num = parseInt(matchNumber[1], 10);
-          if (num >= 1 && num <= 20) {
-            setPriorityLetter('');
-            setPriorityNumber(num);
-          }
-        }
-      }
+    const parsed = parsePriorityPrefix(val);
+    if (parsed.matched) {
+      setPriorityLetter(parsed.letter);
+      setPriorityNumber(parsed.number);
     }
   };
 
@@ -116,61 +83,13 @@ export default function TaskForm({ task, defaultDate, onSave, onCancel, onDelete
       return;
     }
 
-    const toHalfWidth = (str: string): string => {
-      return str.replace(/[Ａ-Ｚａ-ｚ０-９]/g, (s) => {
-        return String.fromCharCode(s.charCodeAt(0) - 0xFEE0);
-      });
-    };
-
-    let finalTitle = title.trim();
-    let normalizedText = toHalfWidth(finalTitle);
-
+    const { parsed, title: stripped } = titleAfterPriorityPrefix(title);
+    let finalTitle = stripped;
     let finalLetter = priorityLetter;
     let finalNumber = priorityNumber;
-
-    const matchBoth = normalizedText.match(/^([A-Ca-c])([0-9]{1,2})\s*(.*)$/);
-    if (matchBoth) {
-      const letter = matchBoth[1].toUpperCase() as PriorityLetter;
-      const num = parseInt(matchBoth[2], 10);
-      if (num >= 1 && num <= 20) {
-        finalLetter = letter;
-        finalNumber = num;
-        const prefixLen = matchBoth[1].length + matchBoth[2].length;
-        let rest = finalTitle.substring(prefixLen);
-        rest = rest.replace(/^[\s　]+/, '');
-        finalTitle = rest;
-      }
-    } else {
-      const matchLetter = normalizedText.match(/^([A-Ca-c])\s+(.*)$/);
-      const matchLetterEnd = normalizedText.match(/^([A-Ca-c])$/);
-      if (matchLetter) {
-        finalLetter = matchLetter[1].toUpperCase() as PriorityLetter;
-        finalNumber = null;
-        let rest = finalTitle.substring(1);
-        rest = rest.replace(/^[\s　]+/, '');
-        finalTitle = rest;
-      } else if (matchLetterEnd) {
-        finalLetter = matchLetterEnd[1].toUpperCase() as PriorityLetter;
-        finalNumber = null;
-        finalTitle = '';
-      } else {
-        const matchNumber = normalizedText.match(/^([0-9]{1,2})\s*(.*)$/);
-        if (matchNumber) {
-          const num = parseInt(matchNumber[1], 10);
-          if (num >= 1 && num <= 20) {
-            finalLetter = '';
-            finalNumber = num;
-            const prefixLen = matchNumber[1].length;
-            let rest = finalTitle.substring(prefixLen);
-            rest = rest.replace(/^[\s　]+/, '');
-            finalTitle = rest;
-          }
-        }
-      }
-    }
-
-    if (!finalTitle.trim()) {
-      finalTitle = title.trim();
+    if (parsed.matched) {
+      finalLetter = parsed.letter;
+      finalNumber = parsed.number;
     }
 
     const calculatedQuadrant = getTaskQuadrant(finalLetter, finalNumber);
